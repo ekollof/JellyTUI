@@ -9,11 +9,13 @@ import pytest
 from textual.widgets import DataTable, Input, OptionList, Static
 
 from jellytui.app import JellyTuiApp
+from jellytui.audio import AudioPlayer
 from jellytui.config import Config
 from jellytui.ui.capabilities import detect_graphics
 from jellytui.ui.login import LoginScreen
 from jellytui.ui.main import MainScreen
 from jellytui.ui.modals import HelpScreen, ResumeScreen
+from jellytui.ui.music import MusicPlayerScreen
 
 
 async def wait_for(pilot, predicate, timeout=15.0):
@@ -346,3 +348,112 @@ async def test_live_pywal_theme_change(fake_server, tmp_path, monkeypatch):
             == app.current_theme.panel.lower(),
             timeout=6,
         )
+
+
+async def test_music_player_queue_and_auto_advance(fake_server, audio_file, tmp_path):
+    usable, reason = AudioPlayer().availability()
+    if not usable:
+        pytest.skip(reason)
+    config = make_config(fake_server.url, tmp_path / "config.json")
+    config.audio_backend = "ffmpeg"
+    config.report_progress = True
+    config.images = False
+    fake_server.media_path = audio_file
+    app = JellyTuiApp(config, config_path=tmp_path / "config.json")
+    app.audio_player.set_volume(0)
+    async with app.run_test(size=(130, 40)) as pilot:
+        main = app.screen
+        assert isinstance(main, MainScreen)
+        assert await wait_for(
+            pilot,
+            lambda: not main.query_one("#items", DataTable).loading,
+        )
+        await pilot.press("slash")
+        await pilot.press(*"track")
+        await pilot.press("enter")
+        assert await wait_for(
+            pilot,
+            lambda: main.location.kind == "search" and len(main.items) == 2,
+        )
+
+        main.query_one("#items", DataTable).focus()
+        await pilot.press("enter")
+        assert await wait_for(pilot, lambda: main.playback is not None, timeout=20)
+        context = main.playback
+        assert context is not None
+        assert context.engine == "audio"
+        assert context.item.name == "Track One"
+        assert [item.name for item in main.music_queue] == ["Track One", "Track Two"]
+        assert not app.player.state().running
+
+        assert await wait_for(
+            pilot,
+            lambda: any(
+                request["path"] == "/Sessions/Playing"
+                and request["body"]
+                and request["body"].get("ItemId") == "audio-1"
+                for request in fake_server.requests
+            ),
+            timeout=10,
+        )
+        assert await wait_for(
+            pilot,
+            lambda: any(
+                request["path"] == "/Sessions/Playing/Progress"
+                for request in fake_server.requests
+            ),
+            timeout=10,
+        )
+
+        await pilot.press("m")
+        assert await wait_for(pilot, lambda: isinstance(app.screen, MusicPlayerScreen))
+        music = app.screen
+        assert "Track One" in str(music.query_one("#music-title", Static).render())
+        queue = music.query_one("#music-queue", OptionList)
+        assert queue.option_count == 2
+
+        await pilot.press("space")
+        assert await wait_for(pilot, lambda: app.audio_player.state().paused)
+        await pilot.press("space")
+        assert await wait_for(pilot, lambda: not app.audio_player.state().paused)
+
+        assert await wait_for(
+            pilot,
+            lambda: main.playback is not None
+            and main.playback.item.name == "Track Two",
+            timeout=12,
+        )
+        assert main.music_index == 1
+        assert await wait_for(
+            pilot,
+            lambda: "Track Two"
+            in str(music.query_one("#music-title", Static).render()),
+            timeout=5,
+        )
+        assert await wait_for(
+            pilot,
+            lambda: any(
+                request["path"] == "/Sessions/Playing"
+                and request["body"]
+                and request["body"].get("ItemId") == "audio-2"
+                for request in fake_server.requests
+            ),
+            timeout=10,
+        )
+
+        await pilot.press("p")
+        assert await wait_for(
+            pilot,
+            lambda: main.playback is not None
+            and main.playback.item.name == "Track One",
+            timeout=10,
+        )
+        assert main.music_index == 0
+
+        await pilot.press("s")
+        assert await wait_for(pilot, lambda: main.playback is None)
+        await pilot.press("escape")
+        assert await wait_for(pilot, lambda: isinstance(app.screen, MainScreen))
+
+        await pilot.press("S")  # no-op, but must not crash after the queue stopped
+        await pilot.pause(0.3)

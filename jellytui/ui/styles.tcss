@@ -343,3 +343,109 @@ ModalScreen {
     background: $primary 38%;
     color: $foreground;
 }
+
+/* ------------------------------------------------------------- music player */
+
+MusicPlayerScreen {
+    align: center middle;
+    background: rgba(0, 0, 0, 0.8);
+}
+
+#music-panel {
+    width: 92%;
+    height: 88%;
+    padding: 1 2;
+    background: $surface;
+    border: round $primary;
+}
+
+#music-kicker {
+    height: 1;
+    color: $text-muted;
+    text-style: bold;
+}
+
+#music-body {
+    height: 1fr;
+}
+
+#music-art-box {
+    width: 44;
+    height: 18;
+    align-horizontal: center;
+    align-vertical: middle;
+    margin-right: 2;
+}
+
+#music-art-image {
+    height: 18;
+    width: auto;
+}
+
+#music-art {
+    height: 18;
+    width: auto;
+    text-align: center;
+}
+
+#music-info {
+    width: 1fr;
+    padding: 0 1;
+    align-vertical: middle;
+}
+
+#music-title {
+    height: auto;
+    color: $foreground;
+    text-style: bold;
+}
+
+#music-subtitle {
+    height: auto;
+    color: $text-muted;
+}
+
+#music-state {
+    height: 1;
+    margin-top: 1;
+    text-style: bold;
+}
+
+#music-progress {
+    margin: 1 0;
+}
+
+#music-time {
+    height: 1;
+    color: $text-muted;
+}
+
+#music-controls {
+    height: auto;
+    margin-top: 2;
+    color: $text-muted;
+}
+
+#music-queue-box {
+    height: 9;
+    border-top: solid $panel;
+    padding-top: 1;
+}
+
+#music-queue-title {
+    height: 1;
+    color: $text-muted;
+    text-style: bold;
+}
+
+#music-queue {
+    height: 1fr;
+    background: transparent;
+    border: none;
+    padding: 0;
+}
+
+#music-queue > .option-list--option-highlighted {
+    background: $primary 38%;
+    color: $foreground;
+}

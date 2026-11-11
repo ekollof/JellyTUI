@@ -8,6 +8,7 @@ from textual.app import App
 from textual.theme import Theme
 
 from .api import JellyfinClient
+from .audio import AudioPlayer
 from .config import Config, default_config_path
 from .player import MpvPlayer
 from .theming import JELLYFIN_PALETTE, Palette, ThemeManager
@@ -29,6 +30,7 @@ class JellyTuiApp(App):
         self.config_path = Path(config_path) if config_path else default_config_path()
         self.client: JellyfinClient | None = None
         self.player = MpvPlayer(config.mpv_path, config.mpv_args)
+        self.audio_player = AudioPlayer(config.ffmpeg_path, config.audio_device)
         self.theme_manager = ThemeManager(config.theme)
         self._theme_seq = 0
         self._dynamic_theme_name: str | None = None
@@ -134,3 +136,4 @@ class JellyTuiApp(App):
 
     def on_unmount(self) -> None:
         self.player.quit()
+        self.audio_player.quit()

@@ -28,7 +28,7 @@ from textual.widgets.option_list import Option
 from textual.worker import get_current_worker
 
 from ..api import BROWSE_TYPES, AuthenticationError, JellyfinClient, JellyfinError
-from ..config import cache_dir
+from ..audio import AudioError
 from ..models import (
     AUDIO_TYPES,
     TICKS_PER_SECOND,
@@ -41,11 +41,8 @@ from ..models import (
     language_name,
 )
 from ..player import MpvError, MpvPlayer, PlayerState, Track
-from .capabilities import (
-    chafa_ansi,
-    detect_graphics,
-    image_widget_class,
-)
+from .artwork import prepare_artwork
+from .capabilities import detect_graphics, image_widget_class
 from .modals import HelpScreen, ResumeScreen, TrackMenuScreen, TrackOption
 
 SEARCH_TYPES = "Movie,Series,Episode,BoxSet,MusicAlbum,MusicArtist,Audio,MusicVideo,Video"
@@ -88,6 +85,7 @@ class PlaybackContext:
     play_session_id: str
     start_position: float = 0.0
     external_subtitles: dict[int, MediaStream] = field(default_factory=dict)
+    engine: str = "mpv"
     last_report_at: float = 0.0
     last_report_position: float = 0.0
     last_paused: bool = False
@@ -124,6 +122,7 @@ class MainScreen(Screen):
         Binding("space", "toggle_pause", "Pause"),
         Binding("a", "audio_tracks", "Audio"),
         Binding("v", "subtitle_tracks", "Subs"),
+        Binding("m", "music_player", "Music"),
         Binding("question_mark", "help", "Help"),
         Binding("comma", "seek_back", "-10s", show=False),
         Binding("full_stop", "seek_forward", "+10s", show=False),
@@ -167,6 +166,8 @@ class MainScreen(Screen):
         self._quitting = False
         self._details_visible = True
         self.images_enabled = True
+        self.music_queue: list[Item] = []
+        self.music_index = -1
 
     # ---------------------------------------------------------------- layout
 
@@ -631,50 +632,29 @@ class MainScreen(Screen):
         ):
             self._hide_poster()
             return
-        poster_id, poster_tag = artwork
         height = self._poster_height()
         self._poster_size = (38, height)
         self._poster_seq += 1
         self._poster_item_id = item.id
-        self._fetch_poster(
-            item.id, poster_id, poster_tag, self._poster_seq, 38, height
-        )
+        self._fetch_poster(item, self._poster_seq, 38, height)
 
     @work(thread=True, exclusive=True, group="poster")
     def _fetch_poster(
-        self,
-        item_id: str,
-        poster_id: str,
-        poster_tag: str,
-        seq: int,
-        width: int,
-        height: int,
+        self, item: Item, seq: int, width: int, height: int
     ) -> None:
         worker = get_current_worker()
-        path: Path | None = None
-        art: str | None = None
-        try:
-            path = _cached_poster(poster_id, poster_tag)
-            if path is None:
-                fetched = self.app.client.fetch_image(
-                    poster_id, tag=poster_tag, max_height=600
-                )
-                if fetched is not None:
-                    data, content_type = fetched
-                    path = _write_poster(
-                        poster_id, poster_tag, data, content_type
-                    )
-            if path is not None and self.graphics.mode == "chafa":
-                art = chafa_ansi(str(path), width=width, height=height, colors="full")
-                if art is None:
-                    path = None
-        except JellyfinError:
-            path = None
-        except Exception:  # pragma: no cover - artwork must never break browsing
-            path = None
+        artwork = prepare_artwork(
+            self.app.client,
+            item,
+            width=width,
+            height=height,
+            mode=self.graphics.mode,
+        )
         if worker.is_cancelled:
             return
-        self.app.call_from_thread(self._poster_ready, seq, item_id, path, art)
+        self.app.call_from_thread(
+            self._poster_ready, seq, item.id, artwork.path, artwork.ansi
+        )
 
     def _poster_ready(
         self, seq: int, item_id: str, path: Path | None, art: str | None
@@ -719,7 +699,93 @@ class MainScreen(Screen):
 
     # --------------------------------------------------------------- playback
 
+    def active_player_state(self) -> PlayerState | None:
+        """State for whichever backend is currently playing."""
+        context = self.playback
+        if context is None:
+            return None
+        return self._engine_state(context)
+
+    def _engine(self, context: PlaybackContext | None = None):
+        context = context or self.playback
+        if context is not None and context.engine == "audio":
+            return self.app.audio_player
+        return self.app.player
+
+    def _engine_state(self, context: PlaybackContext | None = None) -> PlayerState:
+        return self._engine(context).state()
+
+    def _prepare_music_queue(self, item: Item) -> None:
+        if item.type not in AUDIO_TYPES:
+            self.music_queue = []
+            self.music_index = -1
+            return
+        audio_items = [entry for entry in self.items if entry.type in AUDIO_TYPES]
+        ids = [entry.id for entry in audio_items]
+        if item.id in ids:
+            self.music_queue = audio_items
+            self.music_index = ids.index(item.id)
+        else:
+            self.music_queue = [item]
+            self.music_index = 0
+
+    def current_music_item(self) -> tuple[Item | None, int]:
+        context = self.playback
+        if context and context.item.type in AUDIO_TYPES:
+            return context.item, self.music_index
+        if 0 <= self.music_index < len(self.music_queue):
+            return self.music_queue[self.music_index], self.music_index
+        return None, -1
+
+    def play_music_index(self, index: int) -> None:
+        if not (0 <= index < len(self.music_queue)):
+            return
+        self.music_index = index
+        self._begin_playback(self.music_queue[index], 0.0)
+
+    def music_next(self) -> None:
+        if not self.music_queue:
+            self.notify("No music is queued.", timeout=3)
+            return
+        next_index = self.music_index + 1
+        if next_index >= len(self.music_queue):
+            self.notify("End of the music queue.", timeout=3)
+            return
+        self.play_music_index(next_index)
+
+    def music_previous(self) -> None:
+        if not self.music_queue:
+            self.notify("No music is queued.", timeout=3)
+            return
+        state = self.active_player_state()
+        if state is not None and state.position > 5.0:
+            self._player_command(
+                self._engine().seek, 0.0, absolute=True, error_title="Seek failed"
+            )
+            return
+        if self.music_index > 0:
+            self.play_music_index(self.music_index - 1)
+        elif state is not None:
+            self._player_command(
+                self._engine().seek, 0.0, absolute=True, error_title="Seek failed"
+            )
+
+    def action_music_player(self) -> None:
+        item, _ = self.current_music_item()
+        has_music = bool(
+            item
+            or (self.playback and self.playback.item.type in AUDIO_TYPES)
+            or self.music_queue
+        )
+        if not has_music:
+            self.notify("No music is playing or queued.", timeout=3)
+            return
+        from .music import MusicPlayerScreen
+
+        self.app.push_screen(MusicPlayerScreen(self))
+
     def _play_item(self, item: Item) -> None:
+        self._prepare_music_queue(item)
         start = 0.0
         duration = item.runtime_ticks / TICKS_PER_SECOND if item.runtime_ticks else 0.0
         position = item.resume_seconds
@@ -735,6 +801,15 @@ class MainScreen(Screen):
             return
         self._begin_playback(item, start)
 
+    def _highlight_table_item(self, item_id: str) -> None:
+        if item_id not in self._items_by_id:
+            return
+        table = self.query_one("#items", DataTable)
+        for index, entry in enumerate(self.items):
+            if entry.id == item_id:
+                table.move_cursor(row=index)
+                return
+
     def _resume_choice(self, item: Item, choice: str | None) -> None:
         if choice == "resume":
             self._begin_playback(item, item.resume_seconds)
@@ -747,6 +822,7 @@ class MainScreen(Screen):
         previous = self.playback
         self.playback = None
         self._starting_item = item
+        self._highlight_table_item(item.id)
         self._set_now(
             item.title,
             "Starting playback…",
@@ -763,9 +839,16 @@ class MainScreen(Screen):
         worker = get_current_worker()
         client: JellyfinClient = self.app.client
         player: MpvPlayer = self.app.player
+        audio = self.app.audio_player
         try:
-            if previous and self.app.config.report_progress:
-                _report_stopped_quietly(client, previous, player.state())
+            if previous:
+                previous_state = self._engine_state(previous)
+                if self.app.config.report_progress:
+                    _report_stopped_quietly(client, previous, previous_state)
+                if previous.engine == "audio":
+                    audio.stop()
+                else:
+                    player.stop()
             source = item.media_source
             if source is None or not source.streams:
                 refreshed = client.get_item(item.id)
@@ -775,23 +858,69 @@ class MainScreen(Screen):
             if source is None:
                 raise JellyfinError("No playable media source was found for this item.")
             play_session_id = str(uuid.uuid4())
-            player.ensure_started()
             url = client.stream_url(item, source, play_session_id=play_session_id)
-            player.load(url, start=start_seconds)
-            try:
-                player.set_property("force-media-title", f"{item.title} — JellyTUI")
-            except MpvError:
-                pass
-            context = PlaybackContext(
-                item=item,
-                source=source,
-                play_session_id=play_session_id,
-                start_position=start_seconds,
-            )
-            context.last_paused = player.state().paused
-            self._apply_track_preferences(context)
-            if self.app.config.report_progress:
+            context: PlaybackContext | None = None
+
+            if item.type in AUDIO_TYPES and self.app.config.audio_backend != "mpv":
+                usable, reason = audio.availability()
+                if usable:
+                    try:
+                        audio.load(
+                            url,
+                            start=start_seconds,
+                            duration=item.runtime_ticks / TICKS_PER_SECOND,
+                            title=item.title,
+                        )
+                        state = audio.state()
+                        context = PlaybackContext(
+                            item=item,
+                            source=source,
+                            play_session_id=play_session_id,
+                            start_position=start_seconds,
+                            engine="audio",
+                            ended_count=state.end_count,
+                        )
+                        context.last_paused = state.paused
+                    except AudioError as exc:
+                        audio.stop()
+                        self.app.call_from_thread(
+                            self.notify,
+                            f"Music backend failed ({exc}); falling back to mpv.",
+                            severity="warning",
+                            timeout=6,
+                            markup=False,
+                        )
+                        context = None
+                elif self.app.config.audio_backend == "ffmpeg":
+                    self.app.call_from_thread(
+                        self.notify,
+                        f"Music backend unavailable ({reason}); using mpv.",
+                        severity="warning",
+                        timeout=6,
+                        markup=False,
+                    )
+
+            if context is None:
+                player.ensure_started()
+                player.load(url, start=start_seconds)
+                try:
+                    player.set_property("force-media-title", f"{item.title} — JellyTUI")
+                except MpvError:
+                    pass
                 state = player.state()
+                context = PlaybackContext(
+                    item=item,
+                    source=source,
+                    play_session_id=play_session_id,
+                    start_position=start_seconds,
+                    engine="mpv",
+                    ended_count=state.end_count,
+                )
+                context.last_paused = state.paused
+                self._apply_track_preferences(context)
+                state = player.state()
+
+            if self.app.config.report_progress:
                 try:
                     client.report_start(
                         item,
@@ -804,7 +933,7 @@ class MainScreen(Screen):
                     )
                 except JellyfinError:
                     pass
-        except (JellyfinError, MpvError) as exc:
+        except (JellyfinError, MpvError, AudioError) as exc:
             if not worker.is_cancelled:
                 self.app.call_from_thread(self._playback_failed, str(exc))
             return
@@ -889,6 +1018,7 @@ class MainScreen(Screen):
             return
         self._starting_item = None
         self.playback = context
+        self._last_state = self._engine_state(context)
         self._now_cache = None
         self.notify(f"Playing {context.item.title}", timeout=3, markup=False)
 
@@ -908,19 +1038,35 @@ class MainScreen(Screen):
         eof = state.end_reason == "eof"
         error = state.error if state.end_reason == "error" else None
         position = state.duration if eof and state.duration else state.position
-        self._set_now_idle(
-            f"Finished {context.item.title}" if eof else "Stopped",
-            "" if eof else context.item.title,
-        )
+        backend = "Audio backend" if context.engine == "audio" else "mpv"
+
+        next_item = None
+        if (
+            eof
+            and context.item.type in AUDIO_TYPES
+            and 0 <= self.music_index < len(self.music_queue) - 1
+        ):
+            self.music_index += 1
+            next_item = self.music_queue[self.music_index]
+
         if error:
             self.notify(
-                f"mpv reported an error: {error}",
+                f"{backend} reported an error: {error}",
                 title="Playback error",
                 severity="error",
                 timeout=8,
                 markup=False,
             )
         self._finalize_playback(context, position, eof=eof)
+
+        if next_item is not None:
+            self._begin_playback(next_item, 0.0)
+            return
+
+        self._set_now_idle(
+            f"Finished {context.item.title}" if eof else "Stopped",
+            "" if eof else context.item.title,
+        )
         self._restore_selection_id = context.item.id
         if self.location:
             self._start_load(self.location)
@@ -959,16 +1105,18 @@ class MainScreen(Screen):
     def _tick(self) -> None:
         if not self.is_mounted:
             return
-        player: MpvPlayer = self.app.player
-        state = player.state()
-        self._last_state = state
         context = self.playback
         if context is None:
             return
+        state = self._engine_state(context)
+        self._last_state = state
         if not state.running:
-            self._playback_lost(
-                "mpv exited unexpectedly.", position=state.position
+            message = (
+                "The audio backend stopped unexpectedly."
+                if context.engine == "audio"
+                else "mpv exited unexpectedly."
             )
+            self._playback_lost(message, position=state.position)
             return
         if state.end_count > context.ended_count:
             context.ended_count = state.end_count
@@ -1089,14 +1237,20 @@ class MainScreen(Screen):
                 return
             self.notify("Nothing is playing.", timeout=3)
             return
-        self._player_command(self.app.player.toggle_pause, error_title="Pause failed")
+        self._player_command(self._engine().toggle_pause, error_title="Pause failed")
 
     @work(thread=True, exclusive=True, group="control")
-    def _player_command(self, function: Callable, *args, error_title: str = "mpv error") -> None:
+    def _player_command(
+        self,
+        function: Callable,
+        *args,
+        error_title: str = "Playback error",
+        **kwargs,
+    ) -> None:
         worker = get_current_worker()
         try:
-            function(*args)
-        except MpvError as exc:
+            function(*args, **kwargs)
+        except (MpvError, AudioError) as exc:
             if not worker.is_cancelled:
                 self.app.call_from_thread(
                     self.notify,
@@ -1111,7 +1265,7 @@ class MainScreen(Screen):
         if not self.playback:
             return
         self.playback.pending_report = True
-        self._player_command(self.app.player.seek, offset, error_title="Seek failed")
+        self._player_command(self._engine().seek, offset, error_title="Seek failed")
 
     def action_seek_back(self) -> None:
         self._seek(-10)
@@ -1126,10 +1280,11 @@ class MainScreen(Screen):
         self._seek(60)
 
     def _volume(self, delta: int) -> None:
-        state = self._last_state or self.app.player.state()
-        volume = max(0, min(130, state.volume + delta))
+        state = self._last_state or self._engine_state()
+        limit = 100 if self.playback and self.playback.engine == "audio" else 130
+        volume = max(0, min(limit, state.volume + delta))
         self._player_command(
-            self.app.player.set_volume, volume, error_title="Volume failed"
+            self._engine().set_volume, volume, error_title="Volume failed"
         )
         self.notify(f"Volume {volume}%", timeout=1)
 
@@ -1143,12 +1298,12 @@ class MainScreen(Screen):
         context = self.playback
         if not context:
             return
-        state = self.app.player.state()
+        state = self._engine_state(context)
         self.playback = None
         self._now_cache = None
         self._set_now_idle("Stopped", context.item.title)
         self._finalize_playback(context, max(0.0, state.position), eof=False)
-        self._player_command(self.app.player.stop, error_title="Stop failed")
+        self._player_command(self._engine(context).stop, error_title="Stop failed")
         self._restore_selection_id = context.item.id
         if self.location:
             self._start_load(self.location)
@@ -1158,7 +1313,13 @@ class MainScreen(Screen):
         if not context:
             self.notify("Nothing is playing.", timeout=3)
             return
-        state = self._last_state or self.app.player.state()
+        if context.engine == "audio":
+            self.notify(
+                "Audio track selection is not available with the ffmpeg music backend.",
+                timeout=4,
+            )
+            return
+        state = self._last_state or self._engine_state(context)
         options = [
             TrackOption(
                 key=f"aid:{track.id}",
@@ -1186,7 +1347,13 @@ class MainScreen(Screen):
         if not context:
             self.notify("Nothing is playing.", timeout=3)
             return
-        state = self._last_state or self.app.player.state()
+        if context.engine == "audio":
+            self.notify(
+                "Subtitle selection is not available with the ffmpeg music backend.",
+                timeout=4,
+            )
+            return
+        state = self._last_state or self._engine_state(context)
         options = [
             TrackOption(
                 key="sid:off",
@@ -1449,9 +1616,10 @@ class MainScreen(Screen):
     @work(thread=True, exclusive=True, group="shutdown")
     def _shutdown_worker(self, *, logout: bool) -> None:
         context = self.playback
-        player: MpvPlayer = self.app.player
         client: JellyfinClient = self.app.client
-        state = player.state()
+        player: MpvPlayer = self.app.player
+        audio = self.app.audio_player
+        state = self._engine_state(context) if context else player.state()
         if context and self.app.config.report_progress:
             try:
                 client.report_stopped(
@@ -1463,6 +1631,7 @@ class MainScreen(Screen):
             except JellyfinError:
                 pass
         player.quit()
+        audio.quit()
         if logout:
             self.app.call_from_thread(self._finish_logout)
         else:
@@ -1518,38 +1687,6 @@ def _language_matches(code: str, wanted: str) -> bool:
         return True
     full = language_name(code).lower()
     return bool(full) and (full == wanted_lower or full.startswith(wanted_lower))
-
-
-def _cached_poster(item_id: str, tag: str) -> Path | None:
-    folder = cache_dir() / "posters"
-    folder.mkdir(parents=True, exist_ok=True)
-    matches = sorted(folder.glob(f"{_safe(item_id)}-{_safe(tag)}.*"))
-    return matches[0] if matches else None
-
-
-def _write_poster(
-    item_id: str, tag: str, data: bytes, content_type: str
-) -> Path | None:
-    extension = {
-        "image/jpeg": ".jpg",
-        "image/png": ".png",
-        "image/webp": ".webp",
-        "image/gif": ".gif",
-    }.get((content_type or "").lower(), ".jpg")
-    folder = cache_dir() / "posters"
-    folder.mkdir(parents=True, exist_ok=True)
-    path = folder / f"{_safe(item_id)}-{_safe(tag)}{extension}"
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    try:
-        tmp.write_bytes(data)
-        tmp.replace(path)
-    except OSError:
-        return None
-    return path
-
-
-def _safe(value: str) -> str:
-    return re.sub(r"[^A-Za-z0-9_.-]", "", value)[:80] or "x"
 
 
 def _report_stopped_quietly(

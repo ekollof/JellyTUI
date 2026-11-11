@@ -19,7 +19,12 @@ keep your Jellyfin progress in sync — all without leaving the terminal.
   albums and tracks from every Jellyfin library.
 - **Continue watching** and **Recently added** views, plus server-wide search.
 - **Direct playback in mpv** using the Jellyfin direct-play URL. A separate mpv
-  window opens for video; audio plays without one.
+  window opens for video.
+- **Music without mpv**: audio tracks can play through an ffmpeg → PipeWire/
+  PulseAudio/ALSA backend (the default when available), with queueing and
+  automatic next-track playback. Video still uses mpv.
+- **Music player interface** (`m`): large cover art, track details, progress,
+  controls and the current album/queue.
 - **Audio and subtitle track picker** (`a` / `v`). Embedded tracks are selected
   directly in mpv; separate subtitle files hosted by Jellyfin are added to mpv
   on demand. Image-based subtitles (PGS/VobSub) work too, since mpv renders
@@ -39,7 +44,9 @@ keep your Jellyfin progress in sync — all without leaving the terminal.
 ## Requirements
 
 - Python 3.12+
-- [mpv](https://mpv.io/installation/) on `PATH`
+- [mpv](https://mpv.io/installation/) on `PATH` for video
+- [ffmpeg](https://ffmpeg.org/) on `PATH` for the mpv-free music backend
+- PipeWire (`pw-play`), PulseAudio (`pacat`) or ALSA (`aplay`) for music output
 - A Jellyfin server (tested against Jellyfin 12.x)
 - Optional: [chafa](https://hpjansson.org/chafa/) for cover art on terminals
   without Kitty/Sixel graphics
@@ -107,6 +114,9 @@ language/playback preferences live in the same file.
 --logout                 Forget the saved session
 --mpv PATH               Path to the mpv executable
 --mpv-arg ARG            Extra argument for mpv (repeatable)
+--audio-backend MODE     auto | ffmpeg | mpv
+--audio-device DEVICE    Output device/target for the ffmpeg music backend
+--ffmpeg PATH            Path to the ffmpeg executable
 --audio-language LANG    Preferred audio language (eng, en, English, …)
 --subtitle-language LANG Preferred subtitle language
 --subtitles MODE         auto | off | forced
@@ -115,7 +125,7 @@ language/playback preferences live in the same file.
 --theme SOURCE           auto | omarchy | pywal | jellyfin
 --no-theme-watch         Don't watch palette files for live changes
 --no-progress-report     Don't report progress to Jellyfin
---diagnostics            Print graphics/theme/chafa/mpv detection details
+--diagnostics            Print graphics/theme/audio/chafa/mpv detection details
 --config PATH            Use a different config file
 ```
 
@@ -129,6 +139,24 @@ Environment overrides:
 - `JELLYTUI_PYWAL_COLORS` — path to a pywal `colors.json` or `colors` file
 
 Run `jellytui --diagnostics` to see exactly what was detected.
+
+## Music playback
+
+By default (`audio_backend = "auto"`), audio items use an mpv-free backend:
+`ffmpeg` decodes the Jellyfin stream to PCM and passes it to the system sound
+server through `pw-play` (PipeWire), `pacat` (PulseAudio) or `aplay` (ALSA).
+Video continues to use mpv. If ffmpeg or an output tool is unavailable, music
+falls back to mpv automatically.
+
+When you play a track from an album or list, JellyTUI queues the other audio
+items in that view and advances to the next track when one ends. Press `m` for
+the music player: cover art, track/album details, progress, and the queue.
+Space pauses, the arrow keys seek, `n`/`p` change tracks, `s` stops, and
+Escape returns to browsing.
+
+Use `--audio-backend mpv` to force mpv for music, or `--audio-device` to pick
+a PipeWire/PulseAudio target. This backend is Linux-focused; on systems
+without one of those tools, JellyTUI uses mpv.
 
 ## Theming
 
@@ -170,6 +198,8 @@ palette paths it found.
 | `-` / `=` | Volume down / up |
 | `a` | Choose an audio track |
 | `v` | Choose a subtitle track |
+| `m` | Open the music player |
+| `n` / `p` | Next / previous music track (in the player) |
 | `S` | Stop playback |
 | `r` | Mark watched / unwatched |
 | `i` | Toggle cover art |
@@ -216,10 +246,11 @@ uv run pytest
 
 The test suite includes unit tests for the API client and models, an mpv IPC
 integration test using a generated video with multiple audio/subtitle tracks,
-Textual UI smoke tests, and a full playback test where a fake Jellyfin server
-streams a generated video into mpv and verifies the progress reports that come
-back. Optional live tests run against a real server when `JELLYFIN_URL`,
-`JELLYFIN_USERNAME` and `JELLYFIN_PASSWORD` are set.
+ffmpeg audio-backend tests, Textual UI smoke tests, a full video playback test
+with progress reporting, and a music test that verifies queueing, the music
+player and automatic next-track playback. Optional live tests run against a
+real server when `JELLYFIN_URL`, `JELLYFIN_USERNAME` and `JELLYFIN_PASSWORD`
+are set.
 
 ## Credits
 

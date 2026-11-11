@@ -149,6 +149,8 @@ class HelpScreen(ModalScreen[None]):
         ("- / =", "Volume down / up"),
         ("a", "Choose audio track"),
         ("v", "Choose subtitle track"),
+        ("m", "Open the music player"),
+        ("n / p", "Next / previous music track"),
         ("S", "Stop playback"),
         ("", ""),
         ("Other", ""),

@@ -140,6 +140,7 @@ install_uv() {
 PM="$(detect_pm || true)"
 MISSING=()
 command -v mpv >/dev/null 2>&1 || MISSING+=(mpv)
+command -v ffmpeg >/dev/null 2>&1 || MISSING+=(ffmpeg)
 command -v chafa >/dev/null 2>&1 || MISSING+=(chafa)
 
 if [[ ${#MISSING[@]} -gt 0 ]]; then
@@ -168,11 +169,26 @@ CHAFA_OK=0
 command -v chafa >/dev/null 2>&1 && CHAFA_OK=1
 
 if [[ $MPV_OK -eq 0 ]]; then
-    warn "mpv is not installed: browsing will work, but playback will not start"
+    warn "mpv is not installed: browsing will work, but video playback will not start"
     warn "install mpv before trying to play a video"
 fi
 if [[ $CHAFA_OK -eq 0 ]]; then
     log "chafa is not installed; terminals without Kitty/Sixel graphics will use the text UI"
+fi
+FFMPEG_OK=0
+command -v ffmpeg >/dev/null 2>&1 && FFMPEG_OK=1
+AUDIO_TOOL=""
+for tool in pw-play pacat aplay; do
+    if command -v "$tool" >/dev/null 2>&1; then
+        AUDIO_TOOL="$tool"
+        break
+    fi
+done
+if [[ $FFMPEG_OK -eq 0 ]]; then
+    warn "ffmpeg is not installed; music playback will fall back to mpv"
+fi
+if [[ -z "$AUDIO_TOOL" ]]; then
+    warn "no pw-play/pacat/aplay found; the ffmpeg music backend will fall back to mpv"
 fi
 
 # ------------------------------------------------------------- tool backend
@@ -254,7 +270,7 @@ case ":$PATH:" in
     *) warn "$BIN_DIR is not on your PATH; add it to use the jellytui command" ;;
 esac
 
-log "Dependency check: mpv=$([[ $MPV_OK -eq 1 ]] && echo yes || echo no) chafa=$([[ $CHAFA_OK -eq 1 ]] && echo yes || echo no)"
+log "Dependency check: mpv=$([[ $MPV_OK -eq 1 ]] && echo yes || echo no) ffmpeg=$([[ $FFMPEG_OK -eq 1 ]] && echo yes || echo no) chafa=$([[ $CHAFA_OK -eq 1 ]] && echo yes || echo no) audio=${AUDIO_TOOL:-none}"
 if [[ -f "${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/current/theme/colors.toml" ]]; then
     log "Omarchy theme detected; JellyTUI will follow it live"
 elif [[ -f "${XDG_CACHE_HOME:-$HOME/.cache}/wal/colors.json" ]] || [[ -f "${XDG_CACHE_HOME:-$HOME/.cache}/wal/colors" ]]; then

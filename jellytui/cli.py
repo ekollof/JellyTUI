@@ -28,6 +28,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--mpv", dest="mpv_path", help="Path to the mpv executable.")
     parser.add_argument(
+        "--audio-backend",
+        choices=("auto", "ffmpeg", "mpv"),
+        help="Music playback backend (default: auto: ffmpeg+pipewire/pulse, then mpv).",
+    )
+    parser.add_argument(
+        "--audio-device",
+        metavar="DEVICE",
+        help="Audio output device/target for the ffmpeg music backend.",
+    )
+    parser.add_argument(
+        "--ffmpeg",
+        dest="ffmpeg_path",
+        metavar="PATH",
+        help="Path to the ffmpeg executable used for music playback.",
+    )
+    parser.add_argument(
         "--mpv-arg",
         action="append",
         default=[],
@@ -103,6 +119,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.mpv_path:
         config.mpv_path = args.mpv_path
         changed = True
+    if args.audio_backend:
+        config.audio_backend = args.audio_backend
+        changed = True
+    if args.audio_device is not None:
+        config.audio_device = args.audio_device
+        changed = True
+    if args.ffmpeg_path:
+        config.ffmpeg_path = args.ffmpeg_path
+        changed = True
     if args.mpv_arg:
         config.mpv_args.extend(args.mpv_arg)
         changed = True
@@ -146,6 +171,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _print_diagnostics(config: Config, config_path: Path) -> int:
+    from .audio import AudioPlayer
     from .theming import (
         ThemeManager,
         omarchy_colors_path,
@@ -154,6 +180,8 @@ def _print_diagnostics(config: Config, config_path: Path) -> int:
     from .ui.capabilities import asset_path, detect_graphics
 
     graphics = detect_graphics()
+    audio_player = AudioPlayer(config.ffmpeg_path, config.audio_device)
+    audio_ok, audio_reason = audio_player.availability()
     theme_manager = ThemeManager(config.theme)
     palette = theme_manager.resolve()
     print(f"jellytui        {__version__}")
@@ -167,6 +195,13 @@ def _print_diagnostics(config: Config, config_path: Path) -> int:
     print(f"omarchy colors  {omarchy_colors_path() or 'not found'}")
     print(f"pywal colors    {pywal_colors_path() or 'not found'}")
     print(f"mpv             {shutil.which(config.mpv_path) or config.mpv_path}")
+    backend = config.audio_backend
+    resolved = "ffmpeg" if (backend != "mpv" and audio_ok) else "mpv"
+    audio_state = "ok" if audio_ok else audio_reason
+    print(f"audio backend   {backend} -> {resolved} ({audio_state})")
+    print(f"audio output    {audio_player.output_tool or 'not found'}")
+    print(f"ffmpeg          {shutil.which(config.ffmpeg_path) or config.ffmpeg_path}")
+    print(f"audio device    {config.audio_device or 'system default'}")
     print(f"logo asset      {asset_path('jellyfin-icon.png')}")
     print(f"terminal        TERM={os.environ.get('TERM', '')!r} "
           f"TERM_PROGRAM={os.environ.get('TERM_PROGRAM', '')!r} "

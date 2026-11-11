@@ -82,6 +82,53 @@ def movie_item(item_id="movie-1", name="The Matrix", *, played=False, position=0
     return item
 
 
+def fake_audio_source(item_id: str, runtime_ticks: int = 2 * TICKS_PER_SECOND) -> dict:
+    return {
+        "Id": item_id,
+        "Name": "Fake audio source",
+        "Container": "flac",
+        "RunTimeTicks": runtime_ticks,
+        "SupportsDirectPlay": True,
+        "SupportsDirectStream": True,
+        "DefaultAudioStreamIndex": 0,
+        "MediaStreams": [
+            {
+                "Index": 0,
+                "Type": "Audio",
+                "Codec": "flac",
+                "Language": "eng",
+                "DisplayTitle": "FLAC - Stereo",
+                "Channels": 2,
+                "ChannelLayout": "stereo",
+                "IsDefault": True,
+            }
+        ],
+    }
+
+
+def audio_items() -> list[dict]:
+    return [
+        {
+            "Id": f"audio-{index}",
+            "Name": name,
+            "Type": "Audio",
+            "Album": "Test Album",
+            "AlbumId": "album-test",
+            "Artists": ["Test Artist"],
+            "ProductionYear": 2026,
+            "RunTimeTicks": 2 * TICKS_PER_SECOND,
+            "MediaSources": [fake_audio_source(f"audio-{index}")],
+            "ImageTags": {"Primary": "fake-audio-art"},
+            "UserData": {
+                "Played": False,
+                "PlaybackPositionTicks": 0,
+                "PlayedPercentage": 0.0,
+            },
+        }
+        for index, name in ((1, "Track One"), (2, "Track Two"))
+    ]
+
+
 def series_items() -> dict[str, list[dict]]:
     series = {
         "Id": "series-1",
@@ -178,6 +225,7 @@ class FakeJellyfinServer(ThreadingHTTPServer):
         self.requests: list[dict] = []
         self.overrides: dict[tuple[str, str], tuple[int, object]] = {}
         self.include_playable = False
+        self.serve_images = False
         self.media_path: Path | None = None
         self.thread = threading.Thread(target=self.serve_forever, daemon=True)
         self.thread.start()
@@ -279,7 +327,10 @@ class FakeJellyfinHandler(BaseHTTPRequestHandler):
         if method == "GET" and path == "/Items":
             return self._items(query)
         if method == "GET" and path.startswith("/Items/") and path.endswith("/Images/Primary"):
-            return 404, {"Message": "No image in tests"}
+            if not self.server.serve_images:
+                return 404, {"Message": "No image in tests"}
+            image = Path(__file__).resolve().parent.parent / "jellytui/assets/jellyfin-icon.png"
+            return 200, (image.read_bytes(), "image/png")
         if method == "GET" and path.startswith("/Items/"):
             item_id = path.split("/")[2]
             for item in [*RESUME, *series_items()["series"], *series_items()["season"], *series_items()["episode"]]:
@@ -305,6 +356,7 @@ class FakeJellyfinHandler(BaseHTTPRequestHandler):
             matches = [
                 movie_item(),
                 *series_items()["series"],
+                *audio_items(),
             ]
             return 200, {
                 "Items": [item for item in matches if search in item["Name"].lower()],
@@ -366,6 +418,18 @@ class FakeJellyfinHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(payload)
             return
+        if (
+            isinstance(payload, tuple)
+            and len(payload) == 2
+            and isinstance(payload[0], bytes)
+        ):
+            data, content_type = payload
+            self.send_response(status)
+            self.send_header("Content-Type", str(content_type))
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
         data = json.dumps(payload).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
@@ -418,4 +482,31 @@ def media_file(tmp_path_factory) -> Path:
         str(path),
     ]
     subprocess.run(command, check=True, capture_output=True)
+    return path
+
+
+@pytest.fixture(scope="session")
+def audio_file(tmp_path_factory) -> Path:
+    """A short FLAC used by the ffmpeg audio and music-player tests."""
+    if not shutil.which("ffmpeg"):
+        pytest.skip("ffmpeg is required")
+    path = tmp_path_factory.mktemp("audio") / "tone.flac"
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:duration=2",
+            "-c:a",
+            "flac",
+            str(path),
+        ],
+        check=True,
+        capture_output=True,
+    )
     return path

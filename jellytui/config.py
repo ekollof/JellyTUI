@@ -52,6 +52,9 @@ class Config:
     device_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     mpv_path: str = "mpv"
     mpv_args: list[str] = field(default_factory=list)
+    audio_backend: str = "auto"  # auto | ffmpeg | mpv
+    audio_device: str = ""
+    ffmpeg_path: str = "ffmpeg"
     audio_language: str = ""
     subtitle_language: str = ""
     subtitle_mode: str = "auto"  # auto | off | forced
