@@ -1,0 +1,345 @@
+/* JellyTUI styles */
+
+Screen {
+    background: $background;
+    color: $foreground;
+}
+
+Header {
+    background: $panel;
+    color: $foreground;
+}
+
+Footer {
+    background: $panel;
+}
+
+/* --------------------------------------------------------------- login */
+
+LoginScreen {
+    align: center middle;
+}
+
+#login-shell {
+    width: 100%;
+    height: 1fr;
+    align: center middle;
+}
+
+#login-card {
+    width: 62;
+    max-width: 96%;
+    height: auto;
+    padding: 1 3;
+    background: $surface;
+    border: round $primary;
+}
+
+#login-card.compact {
+    padding: 0 3;
+}
+
+#login-card.compact #login-actions {
+    margin-top: 1;
+}
+
+#login-card.compact #login-status {
+    height: 1;
+}
+
+#brand {
+    width: 100%;
+    height: auto;
+    align-horizontal: center;
+    margin-bottom: 1;
+}
+
+#login-logo {
+    height: 9;
+    width: auto;
+    margin-bottom: 1;
+}
+
+#login-logo-art {
+    height: 9;
+    width: auto;
+    text-align: center;
+    margin-bottom: 1;
+}
+
+#logo {
+    width: auto;
+    text-align: center;
+}
+
+#wordmark {
+    width: auto;
+    text-align: center;
+}
+
+#tagline {
+    width: 100%;
+    text-align: center;
+    color: $text-muted;
+    margin-bottom: 2;
+}
+
+.field-label {
+    margin-top: 1;
+    color: $text-muted;
+    text-style: bold;
+}
+
+#login-card Input {
+    background: $background;
+    border: tall $panel;
+}
+
+#login-card Input:focus {
+    border: tall $primary;
+}
+
+#login-actions {
+    height: auto;
+    align-horizontal: right;
+    margin-top: 2;
+}
+
+#connect {
+    min-width: 16;
+}
+
+#login-status {
+    height: 2;
+    margin-top: 1;
+    color: $text-muted;
+}
+
+/* ---------------------------------------------------------------- main */
+
+#body {
+    height: 1fr;
+}
+
+#sidebar {
+    width: 26;
+    background: $surface;
+    border-right: solid $panel;
+    padding-top: 1;
+}
+
+.section-title {
+    padding: 0 1;
+    color: $text-muted;
+    text-style: bold;
+}
+
+#libraries {
+    height: 1fr;
+    background: transparent;
+    border: none;
+    padding: 0;
+}
+
+#libraries > .option-list--option {
+    padding: 0 1;
+}
+
+#libraries > .option-list--option-highlighted {
+    background: $primary 38%;
+    color: $foreground;
+    text-style: bold;
+}
+
+#main {
+    width: 1fr;
+}
+
+#breadcrumb {
+    height: 1;
+    padding: 0 1;
+    background: $panel;
+    color: $foreground;
+}
+
+#search {
+    display: none;
+    height: 3;
+    margin: 0 1;
+    background: $background;
+    border: tall $panel;
+}
+
+#search:focus {
+    border: tall $primary;
+}
+
+#items {
+    height: 1fr;
+}
+
+DataTable > .datatable--header {
+    background: $panel;
+    color: $primary;
+    text-style: bold;
+}
+
+DataTable > .datatable--cursor {
+    background: $primary 38%;
+    color: $foreground;
+}
+
+DataTable > .datatable--even-row {
+    background: $background;
+}
+
+DataTable > .datatable--odd-row {
+    background: $surface;
+}
+
+#details {
+    width: 42;
+    background: $surface;
+    border-left: solid $panel;
+    padding: 0 1;
+}
+
+#poster-box {
+    display: none;
+    height: 12;
+    width: 100%;
+    margin: 1 0;
+    align-horizontal: center;
+}
+
+#poster {
+    height: 12;
+    width: auto;
+}
+
+#poster-art {
+    height: 12;
+    width: auto;
+    text-align: center;
+}
+
+#details-scroll {
+    height: 1fr;
+}
+
+#details-title {
+    padding-top: 1;
+    color: $foreground;
+    text-style: bold;
+}
+
+#details-meta {
+    color: $text-muted;
+}
+
+#details-body {
+    margin-top: 1;
+    color: $foreground;
+}
+
+/* ---------------------------------------------------------- now playing */
+
+#nowplaying {
+    height: 3;
+    background: $panel;
+    border-top: solid $panel;
+    padding: 0 1;
+    align-vertical: middle;
+}
+
+#now-title {
+    width: 2fr;
+    content-align-vertical: middle;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+    color: $foreground;
+}
+
+#now-progress {
+    width: 3fr;
+    margin: 0 1;
+}
+
+#now-meta {
+    width: auto;
+    min-width: 20;
+    content-align-vertical: middle;
+    text-align: right;
+    color: $text-muted;
+}
+
+/* --------------------------------------------------------------- modals */
+
+ModalScreen {
+    align: center middle;
+    background: rgba(0, 0, 0, 0.7);
+}
+
+#dialog {
+    width: 64;
+    height: auto;
+    max-height: 90%;
+    padding: 1 2;
+    background: $surface;
+    border: round $primary;
+}
+
+#dialog.compact-dialog {
+    width: 60;
+}
+
+#dialog.track-dialog {
+    width: 76;
+}
+
+#dialog.help-dialog {
+    width: 76;
+    height: 84%;
+}
+
+#dialog-title {
+    color: $primary;
+    text-style: bold;
+    margin-bottom: 1;
+}
+
+.dialog-subject {
+    color: $foreground;
+    text-style: bold;
+}
+
+.dialog-body {
+    color: $foreground;
+}
+
+.dialog-hint {
+    color: $text-muted;
+    margin-top: 1;
+}
+
+.dialog-buttons {
+    height: auto;
+    align-horizontal: right;
+    margin-top: 1;
+}
+
+.dialog-buttons Button {
+    margin-left: 1;
+}
+
+#track-options {
+    height: auto;
+    max-height: 18;
+    background: $background;
+    border: none;
+}
+
+#track-options > .option-list--option-highlighted {
+    background: $primary 38%;
+    color: $foreground;
+}
