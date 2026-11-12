@@ -9,7 +9,13 @@ from urllib.parse import quote, urlencode
 import requests
 
 from . import __version__
-from .models import AUDIO_TYPES, TICKS_PER_SECOND, Item, MediaSource
+from .models import (
+    AUDIO_TYPES,
+    TICKS_PER_SECOND,
+    Item,
+    MediaSource,
+    RemoteSearchResult,
+)
 
 # Fields requested whenever we load a list of items. MediaSources carries the
 # audio/subtitle stream metadata that the player needs for track switching.
@@ -27,6 +33,9 @@ ITEM_FIELDS = ",".join(
         "ChildCount",
         "SeriesInfo",
         "PrimaryImageAspectRatio",
+        "OriginalTitle",
+        "SortName",
+        "Tags",
     ]
 )
 
@@ -376,6 +385,146 @@ class JellyfinClient:
             ),
         )
 
+    # ------------------------------------------------------------------ music
+
+    def get_music_tracks(
+        self,
+        parent_id: str | None = None,
+        *,
+        recursive: bool = True,
+        sort_by: str = "SortName",
+        limit: int = 2000,
+    ) -> list[Item]:
+        """Load audio tracks for a music library, artist, album or other folder."""
+        return self.get_items(
+            parent_id=parent_id,
+            include_types="Audio,AudioBook",
+            recursive=recursive,
+            sort_by=sort_by,
+            limit=limit,
+        )
+
+    def instant_mix(self, item_id: str, limit: int = 100) -> list[Item]:
+        """Build a Jellyfin instant mix from a track, album or artist."""
+        return self._mix_items(
+            f"/Items/{quote(item_id)}/InstantMix", limit=limit
+        )
+
+    def genre_mix(self, genre_name: str, limit: int = 100) -> list[Item]:
+        """Build a Jellyfin instant mix from a music genre."""
+        return self._mix_items(
+            f"/MusicGenres/{quote(genre_name, safe='')}/InstantMix", limit=limit
+        )
+
+    def get_music_genres(self, parent_id: str | None = None) -> list[str]:
+        """List the music genres known to the server."""
+        params: dict[str, Any] = {
+            "userId": self.user_id,
+            "includeItemTypes": "Audio",
+            "sortBy": "SortName",
+            "enableTotalRecordCount": "false",
+        }
+        if parent_id:
+            params["parentId"] = parent_id
+        data = self._get_json("/Genres", params)
+        names: list[str] = []
+        for entry in data.get("Items") or []:
+            name = str(entry.get("Name") or "")
+            if name and name not in names:
+                names.append(name)
+        return names
+
+    def _mix_items(self, path: str, *, limit: int) -> list[Item]:
+        data = self._get_json(
+            path,
+            {
+                "userId": self.user_id,
+                "limit": limit,
+                "fields": ITEM_FIELDS,
+                "enableImages": "true",
+                "enableImageTypes": "Primary",
+                "imageTypeLimit": 1,
+                "enableUserData": "true",
+            },
+        )
+        return [Item.from_json(item) for item in data.get("Items") or []]
+
+    # --------------------------------------------------------------- lookup
+
+    def remote_search(
+        self,
+        item_id: str,
+        search_type: str,
+        search_info: dict[str, Any],
+        provider_name: str | None = None,
+    ) -> list[RemoteSearchResult]:
+        """Search Jellyfin's enabled remote metadata providers."""
+        body: dict[str, Any] = {
+            "SearchInfo": search_info,
+            "ItemId": item_id,
+        }
+        if provider_name:
+            body["SearchProviderName"] = provider_name
+        response = self._request(
+            "POST",
+            f"/Items/RemoteSearch/{quote(search_type)}",
+            json_body=body,
+        )
+        try:
+            data = response.json()
+        except ValueError:
+            return []
+        if not isinstance(data, list):
+            return []
+        return [
+            RemoteSearchResult.from_json(entry)
+            for entry in data
+            if isinstance(entry, dict)
+        ]
+
+    def apply_remote_search(
+        self,
+        item_id: str,
+        result: RemoteSearchResult | dict[str, Any],
+        *,
+        replace_images: bool = True,
+    ) -> None:
+        body = result.raw if isinstance(result, RemoteSearchResult) else result
+        self._request(
+            "POST",
+            f"/Items/RemoteSearch/Apply/{quote(item_id)}",
+            params={"replaceAllImages": "true" if replace_images else "false"},
+            json_body=body,
+        )
+
+    # --------------------------------------------------------------- metadata
+
+    def get_item_edit_data(self, item_id: str) -> dict[str, Any]:
+        """Get the raw item DTO used to populate the metadata editor."""
+        return self._get_json(
+            f"/Items/{quote(item_id)}", {"userId": self.user_id}
+        )
+
+    def update_item_metadata(
+        self, item_id: str, changes: dict[str, Any]
+    ) -> Item:
+        """Update editable metadata while preserving fields we do not touch.
+
+        Jellyfin's UpdateItem endpoint assigns several DTO fields unconditionally,
+        so the request starts from a fresh copy of the item and applies only the
+        requested changes.
+        """
+        path = f"/Items/{quote(item_id)}"
+        raw = self._get_json(path, {"userId": self.user_id})
+        payload: dict[str, Any] = {}
+        for key in METADATA_PRESERVE_FIELDS:
+            if key in raw:
+                payload[key] = raw[key]
+        payload["Id"] = raw.get("Id") or item_id
+        payload.update(changes)
+        self._request("POST", path, json_body=payload)
+        return self.get_item(item_id)
+
     # ------------------------------------------------------------------ urls
 
     def stream_url(
@@ -489,6 +638,40 @@ def _progress_body(
     if subtitle_index is not None:
         body["SubtitleStreamIndex"] = int(subtitle_index)
     return body
+
+
+METADATA_PRESERVE_FIELDS = (
+    "Name",
+    "ForcedSortName",
+    "OriginalTitle",
+    "OriginalLanguage",
+    "CriticRating",
+    "CommunityRating",
+    "IndexNumber",
+    "ParentIndexNumber",
+    "Overview",
+    "Genres",
+    "Tags",
+    "ProductionYear",
+    "OfficialRating",
+    "CustomRating",
+    "PreferredMetadataLanguage",
+    "PreferredMetadataCountryCode",
+    "LockData",
+    "LockedFields",
+    "EndDate",
+    "PremiereDate",
+    "Album",
+    "ArtistItems",
+    "AlbumArtists",
+    "ProviderIds",
+    "DisplayOrder",
+    "AspectRatio",
+    "RunTimeTicks",
+    "AirsBeforeSeasonNumber",
+    "AirsAfterSeasonNumber",
+    "AirsBeforeEpisodeNumber",
+)
 
 
 SUBTITLE_FORMATS = {

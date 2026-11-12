@@ -6,16 +6,21 @@ import time
 from pathlib import Path
 
 import pytest
-from textual.widgets import DataTable, Input, OptionList, Static
+from conftest import album_item
+from textual.widgets import Button, DataTable, Input, OptionList, Static
 
 from jellytui.app import JellyTuiApp
 from jellytui.audio import AudioPlayer
 from jellytui.config import Config
+from jellytui.models import Item
 from jellytui.ui.capabilities import detect_graphics
 from jellytui.ui.login import LoginScreen
+from jellytui.ui.lookup import LookupScreen
 from jellytui.ui.main import MainScreen
+from jellytui.ui.metadata import MetadataScreen
 from jellytui.ui.modals import HelpScreen, ResumeScreen
 from jellytui.ui.music import MusicPlayerScreen
+from jellytui.ui.queue import GenreScreen, QueueScreen
 
 
 async def wait_for(pilot, predicate, timeout=15.0):
@@ -65,7 +70,7 @@ async def test_browse_search_and_modals(fake_server, tmp_path):
         assert "The Matrix" in str(screen.query_one("#details-title", Static).render())
 
         libraries = screen.query_one("#libraries", OptionList)
-        assert libraries.option_count == 5  # resume, latest, separator, 2 views
+        assert libraries.option_count == 6  # resume, latest, separator, 3 views
 
         # Open the Shows library and drill into series -> season -> episodes.
         option_ids = [option.id for option in libraries.options]
@@ -350,6 +355,251 @@ async def test_live_pywal_theme_change(fake_server, tmp_path, monkeypatch):
         )
 
 
+async def test_music_library_hierarchy(fake_server, tmp_path):
+    config = make_config(fake_server.url, tmp_path / "config.json")
+    app = JellyTuiApp(config, config_path=tmp_path / "config.json")
+    async with app.run_test(size=(130, 40)) as pilot:
+        main = app.screen
+        table = main.query_one("#items", DataTable)
+        assert await wait_for(pilot, lambda: not table.loading)
+
+        libraries = main.query_one("#libraries", OptionList)
+        option_ids = [option.id for option in libraries.options]
+        libraries.highlighted = option_ids.index("view:lib-music")
+        libraries.focus()
+        await pilot.press("enter")
+        assert await wait_for(
+            pilot,
+            lambda: main.location is not None
+            and main.location.key == "view:lib-music"
+            and main.items
+            and not table.loading,
+        )
+        # The music library starts with artists, never a flat artist/album mix.
+        assert [item.type for item in main.items] == ["MusicArtist"]
+        assert str(table.ordered_columns[0].label) == "Artist"
+
+        table.focus()
+        await pilot.press("enter")
+        assert await wait_for(
+            pilot, lambda: main.items and main.items[0].type == "MusicAlbum"
+        )
+        assert str(table.ordered_columns[0].label) == "Album"
+        assert "Music  /  Test Artist" in str(
+            main.query_one("#breadcrumb", Static).render()
+        )
+
+        await pilot.press("enter")
+        assert await wait_for(
+            pilot, lambda: main.items and main.items[0].type == "Audio"
+        )
+        assert [item.name for item in main.items] == ["Track One", "Track Two"]
+        assert str(table.ordered_columns[0].label) == "Track"
+        assert str(table.get_row_at(0)[0]) == "01  Track One"
+        assert "Music  /  Test Artist  /  Test Album" in str(
+            main.query_one("#breadcrumb", Static).render()
+        )
+        details_meta = str(main.query_one("#details-meta", Static).render())
+        assert "Test Artist — Test Album" in details_meta
+        assert "2s" in details_meta
+
+
+async def test_queue_add_reorder_remove_and_clear(fake_server, tmp_path):
+    config = make_config(fake_server.url, tmp_path / "config.json")
+    app = JellyTuiApp(config, config_path=tmp_path / "config.json")
+    async with app.run_test(size=(130, 40)) as pilot:
+        main = app.screen
+        table = main.query_one("#items", DataTable)
+        assert await wait_for(pilot, lambda: not table.loading)
+
+        libraries = main.query_one("#libraries", OptionList)
+        option_ids = [option.id for option in libraries.options]
+        libraries.highlighted = option_ids.index("view:lib-music")
+        libraries.focus()
+        await pilot.press("enter")
+        assert await wait_for(
+            pilot, lambda: main.location is not None
+            and main.location.include_types == "MusicArtist"
+            and main.items
+        )
+
+        # Add the selected artist (all their tracks) to the queue.
+        table.focus()
+        await pilot.press("A")
+        assert await wait_for(pilot, lambda: len(main.music_queue) == 2)
+        assert [item.name for item in main.music_queue] == ["Track One", "Track Two"]
+        assert main.music_index == 0
+        assert main.playback is None
+
+        await pilot.press("Q")
+        assert await wait_for(pilot, lambda: isinstance(app.screen, QueueScreen))
+        queue_screen = app.screen
+        options = queue_screen.query_one("#queue-list", OptionList)
+        assert await wait_for(pilot, lambda: options.option_count == 2)
+
+        await pilot.press("J")
+        assert [item.name for item in main.music_queue] == ["Track Two", "Track One"]
+        assert main.music_index == 1
+        await pilot.press("K")
+        assert [item.name for item in main.music_queue] == ["Track One", "Track Two"]
+        assert main.music_index == 0
+
+        await pilot.press("d")
+        assert await wait_for(pilot, lambda: len(main.music_queue) == 1)
+        assert main.music_queue[0].name == "Track Two"
+        assert main.music_index == 0
+
+        await pilot.press("x")
+        assert main.music_queue == []
+        assert main.music_index == -1
+
+        await pilot.press("escape")
+        assert await wait_for(pilot, lambda: isinstance(app.screen, MainScreen))
+
+
+async def test_queue_add_all_and_dedupe(fake_server, tmp_path):
+    config = make_config(fake_server.url, tmp_path / "config.json")
+    app = JellyTuiApp(config, config_path=tmp_path / "config.json")
+    async with app.run_test(size=(130, 40)) as pilot:
+        main = app.screen
+        table = main.query_one("#items", DataTable)
+        assert await wait_for(pilot, lambda: not table.loading)
+
+        libraries = main.query_one("#libraries", OptionList)
+        option_ids = [option.id for option in libraries.options]
+        libraries.highlighted = option_ids.index("view:lib-music")
+        libraries.focus()
+        await pilot.press("enter")
+        assert await wait_for(
+            pilot, lambda: main.location is not None
+            and main.location.include_types == "MusicArtist"
+            and main.items
+        )
+
+        # Ctrl+A queues every track under the current music view.
+        table.focus()
+        await pilot.press("ctrl+a")
+        assert await wait_for(pilot, lambda: len(main.music_queue) == 2)
+        await pilot.press("A")
+        await pilot.pause(1.0)
+        assert len(main.music_queue) == 2  # already queued tracks are not duplicated
+
+
+async def test_queue_generators(fake_server, audio_file, tmp_path):
+    usable, reason = AudioPlayer().availability()
+    if not usable:
+        pytest.skip(reason)
+    config = make_config(fake_server.url, tmp_path / "config.json")
+    config.audio_backend = "ffmpeg"
+    config.report_progress = False
+    fake_server.media_path = audio_file
+    app = JellyTuiApp(config, config_path=tmp_path / "config.json")
+    app.audio_player.set_volume(0)
+    async with app.run_test(size=(130, 40)) as pilot:
+        main = app.screen
+        table = main.query_one("#items", DataTable)
+        assert await wait_for(pilot, lambda: not table.loading)
+
+        # Shuffle the entire library.
+        await pilot.press("F")
+        assert await wait_for(
+            pilot,
+            lambda: len(main.music_queue) == 2 and main.playback is not None,
+            timeout=20,
+        )
+        assert any(
+            request["path"] == "/Items"
+            and request["query"].get("sortBy") == ["Random"]
+            and "Audio" in request["query"].get("includeItemTypes", [""])[0]
+            for request in fake_server.requests
+        )
+        await pilot.press("S")
+        assert await wait_for(pilot, lambda: main.playback is None)
+
+        # Genre instant mix from the queue screen.
+        await pilot.press("Q")
+        assert await wait_for(pilot, lambda: isinstance(app.screen, QueueScreen))
+        await pilot.press("g")
+        assert await wait_for(pilot, lambda: isinstance(app.screen, GenreScreen))
+        genre_screen = app.screen
+        await wait_for(
+            pilot,
+            lambda: genre_screen.query_one("#genre-list", OptionList).option_count == 2,
+        )
+        await pilot.press("enter")
+        assert await wait_for(
+            pilot,
+            lambda: any(
+                request["path"] == "/MusicGenres/Black%20Metal/InstantMix"
+                for request in fake_server.requests
+            ),
+            timeout=10,
+        )
+        assert await wait_for(
+            pilot,
+            lambda: len(main.music_queue) == 2 and main.playback is not None,
+            timeout=20,
+        )
+        assert await wait_for(pilot, lambda: isinstance(app.screen, QueueScreen))
+
+        # Library shuffle from the queue screen (the `l` binding).
+        random_requests = sum(
+            request["path"] == "/Items"
+            and request["query"].get("sortBy") == ["Random"]
+            for request in fake_server.requests
+        )
+        await pilot.press("l")
+        assert await wait_for(
+            pilot,
+            lambda: sum(
+                request["path"] == "/Items"
+                and request["query"].get("sortBy") == ["Random"]
+                for request in fake_server.requests
+            )
+            > random_requests,
+            timeout=10,
+        )
+        assert await wait_for(
+            pilot,
+            lambda: len(main.music_queue) == 2 and main.playback is not None,
+            timeout=20,
+        )
+
+        await pilot.press("escape")
+        assert await wait_for(pilot, lambda: isinstance(app.screen, MainScreen))
+        await pilot.press("S")
+        assert await wait_for(pilot, lambda: main.playback is None)
+
+        # Instant mix from the selected artist in the browser.
+        libraries = main.query_one("#libraries", OptionList)
+        option_ids = [option.id for option in libraries.options]
+        libraries.highlighted = option_ids.index("view:lib-music")
+        libraries.focus()
+        await pilot.press("enter")
+        assert await wait_for(
+            pilot, lambda: main.location is not None
+            and main.location.include_types == "MusicArtist"
+            and main.items
+        )
+        table.focus()
+        await pilot.press("M")
+        assert await wait_for(
+            pilot,
+            lambda: any(
+                request["path"] == "/Items/artist-1/InstantMix"
+                for request in fake_server.requests
+            ),
+            timeout=10,
+        )
+        assert await wait_for(
+            pilot,
+            lambda: len(main.music_queue) == 2 and main.playback is not None,
+            timeout=20,
+        )
+        await pilot.press("S")
+        assert await wait_for(pilot, lambda: main.playback is None)
+
+
 async def test_music_player_queue_and_auto_advance(fake_server, audio_file, tmp_path):
     usable, reason = AudioPlayer().availability()
     if not usable:
@@ -412,6 +662,35 @@ async def test_music_player_queue_and_auto_advance(fake_server, audio_file, tmp_
         queue = music.query_one("#music-queue", OptionList)
         assert queue.option_count == 2
 
+        await pilot.press("e")
+        assert await wait_for(pilot, lambda: isinstance(app.screen, MetadataScreen))
+        editor = app.screen
+        track_name = editor.query_one("#meta-name", Input)
+        assert await wait_for(pilot, lambda: track_name.value == "Track One")
+        assert editor.query_one("#meta-album", Input).value == "Test Album"
+        assert len(editor.query("#lookup-album")) == 1
+        assert len(editor.query("#lookup-artist")) == 1
+        assert len(editor.query("#lookup-item")) == 0
+
+        album_button = editor.query_one("#lookup-album", Button)
+        album_button.focus()
+        await pilot.press("enter")
+        assert await wait_for(pilot, lambda: isinstance(app.screen, LookupScreen))
+        assert await wait_for(
+            pilot,
+            lambda: any(
+                search["type"] == "MusicAlbum"
+                and search["body"].get("ItemId") == "album-test"
+                for search in fake_server.remote_searches
+            ),
+            timeout=10,
+        )
+        await pilot.press("escape")
+        assert await wait_for(pilot, lambda: isinstance(app.screen, MetadataScreen))
+
+        await pilot.press("escape")
+        assert await wait_for(pilot, lambda: isinstance(app.screen, MusicPlayerScreen))
+
         await pilot.press("space")
         assert await wait_for(pilot, lambda: app.audio_player.state().paused)
         await pilot.press("space")
@@ -457,3 +736,135 @@ async def test_music_player_queue_and_auto_advance(fake_server, audio_file, tmp_
 
         await pilot.press("S")  # no-op, but must not crash after the queue stopped
         await pilot.pause(0.3)
+
+
+async def test_music_album_metadata_context(fake_server, tmp_path):
+    config = make_config(fake_server.url, tmp_path / "config.json")
+    app = JellyTuiApp(config, config_path=tmp_path / "config.json")
+    async with app.run_test(size=(130, 40)) as pilot:
+        main = app.screen
+        assert await wait_for(
+            pilot,
+            lambda: not main.query_one("#items", DataTable).loading,
+        )
+        app.push_screen(MetadataScreen(Item.from_json(album_item())))
+        await pilot.pause(0.5)
+        assert await wait_for(pilot, lambda: isinstance(app.screen, MetadataScreen))
+        editor = app.screen
+        name = editor.query_one("#meta-name", Input)
+        assert await wait_for(pilot, lambda: name.value == "Test Album")
+        assert len(editor.query("#lookup-album")) == 1
+        assert len(editor.query("#lookup-artist")) == 1
+        assert len(editor.query("#lookup-item")) == 0
+        assert len(editor.query("#meta-album")) == 0
+        assert len(editor.query("#meta-artists")) == 0
+        assert len(editor.query("#meta-track")) == 0
+        assert (
+            editor.query_one("#meta-album-artists", Input).value == "Test Artist"
+        )
+
+
+async def test_edit_metadata(fake_server, tmp_path):
+    config = make_config(fake_server.url, tmp_path / "config.json")
+    app = JellyTuiApp(config, config_path=tmp_path / "config.json")
+    async with app.run_test(size=(130, 40)) as pilot:
+        main = app.screen
+        assert await wait_for(
+            pilot,
+            lambda: not main.query_one("#items", DataTable).loading,
+        )
+        main.query_one("#items", DataTable).focus()
+        main.query_one("#items", DataTable).move_cursor(row=0)
+        await pilot.press("e")
+        assert await wait_for(pilot, lambda: isinstance(app.screen, MetadataScreen))
+        editor = app.screen
+
+        name = editor.query_one("#meta-name", Input)
+        assert await wait_for(pilot, lambda: name.value == "The Matrix")
+        name.value = "The Matrix Edited"
+        editor.query_one("#meta-genres", Input).value = "Action; Cyberpunk"
+        await pilot.press("ctrl+s")
+
+        assert await wait_for(
+            pilot,
+            lambda: any(
+                request["method"] == "POST"
+                and request["path"] == "/Items/movie-1"
+                for request in fake_server.requests
+            ),
+            timeout=10,
+        )
+        post = next(
+            request
+            for request in fake_server.requests
+            if request["method"] == "POST"
+            and request["path"] == "/Items/movie-1"
+        )
+        assert post["body"]["Name"] == "The Matrix Edited"
+        assert post["body"]["Genres"] == ["Action", "Cyberpunk"]
+        assert post["body"]["Overview"] == "A hacker learns the truth about his reality."
+        assert post["body"]["LockData"] is False
+
+        assert await wait_for(
+            pilot,
+            lambda: isinstance(app.screen, MainScreen)
+            and main.items
+            and main.items[0].name == "The Matrix Edited",
+            timeout=10,
+        )
+
+
+async def test_metadata_lookup(fake_server, tmp_path):
+    config = make_config(fake_server.url, tmp_path / "config.json")
+    app = JellyTuiApp(config, config_path=tmp_path / "config.json")
+    async with app.run_test(size=(130, 40)) as pilot:
+        main = app.screen
+        assert await wait_for(
+            pilot,
+            lambda: not main.query_one("#items", DataTable).loading,
+        )
+        main.query_one("#items", DataTable).focus()
+        main.query_one("#items", DataTable).move_cursor(row=0)
+        await pilot.press("e")
+        assert await wait_for(pilot, lambda: isinstance(app.screen, MetadataScreen))
+        editor = app.screen
+        name = editor.query_one("#meta-name", Input)
+        assert await wait_for(pilot, lambda: name.value == "The Matrix")
+
+        button = editor.query_one("#lookup-item", Button)
+        button.focus()
+        await pilot.press("enter")
+        assert await wait_for(pilot, lambda: isinstance(app.screen, LookupScreen))
+        lookup = app.screen
+        assert await wait_for(
+            pilot,
+            lambda: lookup.query_one("#lookup-results", OptionList).option_count == 1,
+        )
+        panel = lookup.query_one("#lookup-panel")
+        assert lookup.query_one("#lookup-results").region.bottom <= panel.region.bottom
+        assert lookup.query_one(".lookup-actions").region.bottom <= panel.region.bottom
+        await pilot.press("ctrl+s")
+
+        assert await wait_for(
+            pilot,
+            lambda: any(
+                request["path"] == "/Items/RemoteSearch/Apply/movie-1"
+                for request in fake_server.requests
+            ),
+            timeout=10,
+        )
+        apply_request = next(
+            request
+            for request in fake_server.requests
+            if request["path"] == "/Items/RemoteSearch/Apply/movie-1"
+        )
+        assert apply_request["body"]["Name"] == "The Matrix (Lookup)"
+        assert apply_request["query"]["replaceAllImages"] == ["true"]
+
+        assert await wait_for(
+            pilot,
+            lambda: isinstance(app.screen, MainScreen)
+            and main.items
+            and main.items[0].name == "The Matrix (Lookup)",
+            timeout=10,
+        )

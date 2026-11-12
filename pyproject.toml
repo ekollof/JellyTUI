@@ -1,7 +1,7 @@
 [project]
 name = "jellytui"
 version = "0.1.0"
-description = "A keyboard-driven Jellyfin TUI with mpv playback"
+description = "A keyboard-driven Jellyfin TUI with mpv playback, music playback and queue management"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -10,6 +10,10 @@ dependencies = [
     "requests>=2.28",
     "numpy>=1.26",
 ]
+
+[project.urls]
+Homepage = "https://github.com/ekollof/JellyTUI"
+Repository = "https://github.com/ekollof/JellyTUI"
 
 [project.scripts]
 jellytui = "jellytui.cli:main"

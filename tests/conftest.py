@@ -78,6 +78,11 @@ def movie_item(item_id="movie-1", name="The Matrix", *, played=False, position=0
             "PlayCount": 1 if played else 0,
         },
         "ImageTags": {"Primary": tag},
+        "ForcedSortName": name.lower(),
+        "OriginalTitle": name,
+        "Tags": ["cyberpunk"],
+        "LockData": False,
+        "ProviderIds": {"Imdb": "tt0133093"},
     }
     return item
 
@@ -112,6 +117,8 @@ def audio_items() -> list[dict]:
             "Id": f"audio-{index}",
             "Name": name,
             "Type": "Audio",
+            "IndexNumber": index,
+            "ParentIndexNumber": 1,
             "Album": "Test Album",
             "AlbumId": "album-test",
             "Artists": ["Test Artist"],
@@ -127,6 +134,37 @@ def audio_items() -> list[dict]:
         }
         for index, name in ((1, "Track One"), (2, "Track Two"))
     ]
+
+
+def music_artist_items() -> list[dict]:
+    return [
+        {
+            "Id": "artist-1",
+            "Name": "Test Artist",
+            "Type": "MusicArtist",
+            "ChildCount": 1,
+            "Overview": "A test music artist.",
+            "ImageTags": {"Primary": "fake-artist-art"},
+        }
+    ]
+
+
+def album_item() -> dict:
+    return {
+        "Id": "album-test",
+        "Name": "Test Album",
+        "Type": "MusicAlbum",
+        "ParentId": "artist-1",
+        "ProductionYear": 2026,
+        "AlbumArtists": [{"Name": "Test Artist", "Id": "artist-test"}],
+        "Artists": ["Test Artist"],
+        "Genres": ["Electronic"],
+        "Tags": ["synth"],
+        "Overview": "A test album.",
+        "ChildCount": 2,
+        "RunTimeTicks": 4 * TICKS_PER_SECOND,
+        "ImageTags": {"Primary": "fake-album-art"},
+    }
 
 
 def series_items() -> dict[str, list[dict]]:
@@ -183,6 +221,12 @@ VIEWS = [
         "Type": "CollectionFolder",
         "CollectionType": "tvshows",
     },
+    {
+        "Id": "lib-music",
+        "Name": "Music",
+        "Type": "CollectionFolder",
+        "CollectionType": "music",
+    },
 ]
 
 RESUME = [
@@ -226,7 +270,11 @@ class FakeJellyfinServer(ThreadingHTTPServer):
         self.overrides: dict[tuple[str, str], tuple[int, object]] = {}
         self.include_playable = False
         self.serve_images = False
+        self.images: dict[str, Path] = {}
         self.media_path: Path | None = None
+        self.item_updates: dict[str, dict] = {}
+        self.remote_searches: list[dict] = []
+        self.remote_applies: list[dict] = []
         self.thread = threading.Thread(target=self.serve_forever, daemon=True)
         self.thread.start()
 
@@ -302,12 +350,21 @@ class FakeJellyfinHandler(BaseHTTPRequestHandler):
             }
         if method == "GET" and path == "/Users/Me":
             return 200, {"Id": "user-1", "Name": "tester"}
+        if method == "GET" and path == "/Genres":
+            return 200, {
+                "Items": [
+                    {"Name": "Black Metal", "Id": "genre-1", "Type": "MusicGenre"},
+                    {"Name": "Rock", "Id": "genre-2", "Type": "MusicGenre"},
+                ],
+                "TotalRecordCount": 2,
+            }
         if method == "GET" and path == "/UserViews":
             return 200, {"Items": VIEWS, "TotalRecordCount": len(VIEWS)}
         if method == "GET" and path == "/UserItems/Resume":
             items = list(RESUME)
             if self.server.include_playable:
                 items.insert(0, playable_item())
+            items = self._updated(items)
             return 200, {"Items": items, "TotalRecordCount": len(items)}
         if (
             method == "GET"
@@ -321,21 +378,84 @@ class FakeJellyfinHandler(BaseHTTPRequestHandler):
             and path.endswith("/stream")
         ):
             return self._stream_media()
+        if method == "GET" and path.startswith("/Items/") and path.endswith("/InstantMix"):
+            return 200, {"Items": audio_items(), "TotalRecordCount": 2}
+        if (
+            method == "GET"
+            and path.startswith("/MusicGenres/")
+            and path.endswith("/InstantMix")
+        ):
+            return 200, {"Items": audio_items(), "TotalRecordCount": 2}
         if method == "GET" and path == "/Items/Latest":
             # Deliberately a bare list: exercises compatibility with old servers.
-            return 200, [movie_item("movie-3", "Latest Movie", tag="tag-latest")]
+            return 200, self._updated([movie_item("movie-3", "Latest Movie", tag="tag-latest")])
         if method == "GET" and path == "/Items":
             return self._items(query)
+        if method == "POST" and path.startswith("/Items/RemoteSearch/Apply/"):
+            item_id = path.rsplit("/", 1)[-1]
+            self.server.remote_applies.append(
+                {"item_id": item_id, "body": body, "query": query}
+            )
+            if isinstance(body, dict):
+                updates = dict(self.server.item_updates.get(item_id, {}))
+                if body.get("Name"):
+                    updates["Name"] = body["Name"]
+                if body.get("ProductionYear"):
+                    updates["ProductionYear"] = body["ProductionYear"]
+                self.server.item_updates[item_id] = updates
+            return 204, None
+        if method == "POST" and path.startswith("/Items/RemoteSearch/"):
+            search_type = path.rsplit("/", 1)[-1]
+            self.server.remote_searches.append(
+                {"type": search_type, "body": body}
+            )
+            names = {
+                "MusicAlbum": "Test Album (MusicBrainz)",
+                "MusicArtist": "Test Artist (MusicBrainz)",
+                "Movie": "The Matrix (Lookup)",
+                "Series": "Severance (Lookup)",
+                "BoxSet": "Test Collection (Lookup)",
+                "MusicVideo": "Test Video (Lookup)",
+            }
+            name = names.get(search_type, "Remote Result")
+            return 200, [
+                {
+                    "Name": name,
+                    "ProductionYear": 2026,
+                    "ProviderIds": {"MusicBrainzReleaseGroup": "fake-id"},
+                    "SearchProviderName": "MusicBrainz",
+                    "Overview": "A remote metadata result.",
+                    "AlbumArtist": "Test Artist",
+                    "Artists": [{"Name": "Test Artist"}],
+                }
+            ]
+        if (
+            method == "POST"
+            and path.startswith("/Items/")
+            and path.count("/") == 2
+            and isinstance(body, dict)
+        ):
+            self.server.item_updates[path.split("/")[2]] = body
+            return 204, None
         if method == "GET" and path.startswith("/Items/") and path.endswith("/Images/Primary"):
             if not self.server.serve_images:
                 return 404, {"Message": "No image in tests"}
-            image = Path(__file__).resolve().parent.parent / "jellytui/assets/jellyfin-icon.png"
+            item_id = path.split("/")[2]
+            image = self.server.images.get(item_id)
+            if image is None:
+                image = (
+                    Path(__file__).resolve().parent.parent
+                    / "jellytui/assets/jellyfin-icon.png"
+                )
             return 200, (image.read_bytes(), "image/png")
         if method == "GET" and path.startswith("/Items/"):
             item_id = path.split("/")[2]
-            for item in [*RESUME, *series_items()["series"], *series_items()["season"], *series_items()["episode"]]:
+            for item in [*RESUME, *series_items()["series"], *series_items()["season"], *series_items()["episode"], *audio_items(), album_item(), *music_artist_items()]:
                 if item["Id"] == item_id:
-                    return 200, item
+                    return 200, {
+                        **item,
+                        **self.server.item_updates.get(item_id, {}),
+                    }
             return 404, {"Message": "Item not found"}
         if method == "POST" and path in {
             "/Sessions/Playing",
@@ -358,22 +478,43 @@ class FakeJellyfinHandler(BaseHTTPRequestHandler):
                 *series_items()["series"],
                 *audio_items(),
             ]
+            items = [item for item in matches if search in item["Name"].lower()]
             return 200, {
-                "Items": [item for item in matches if search in item["Name"].lower()],
-                "TotalRecordCount": 1,
+                "Items": self._updated(items),
+                "TotalRecordCount": len(items),
             }
         if parent == "lib-movies":
-            return 200, {
-                "Items": [movie_item(), movie_item("movie-2", "Arrival", played=True)],
-                "TotalRecordCount": 2,
-            }
+            items = [movie_item(), movie_item("movie-2", "Arrival", played=True)]
+            return 200, {"Items": self._updated(items), "TotalRecordCount": 2}
         if parent == "lib-shows":
-            return 200, {"Items": series_items()["series"], "TotalRecordCount": 1}
+            items = series_items()["series"]
+            return 200, {"Items": self._updated(items), "TotalRecordCount": 1}
         if parent == "series-1":
-            return 200, {"Items": series_items()["season"], "TotalRecordCount": 1}
+            items = series_items()["season"]
+            return 200, {"Items": self._updated(items), "TotalRecordCount": 1}
         if parent == "season-1":
-            return 200, {"Items": series_items()["episode"], "TotalRecordCount": 1}
+            items = series_items()["episode"]
+            return 200, {"Items": self._updated(items), "TotalRecordCount": 1}
+        include = (query.get("includeItemTypes") or [""])[0]
+        if "Audio" in include and parent in {"lib-music", "artist-1", "album-test"}:
+            items = audio_items()
+            return 200, {"Items": self._updated(items), "TotalRecordCount": len(items)}
+        if parent == "lib-music":
+            items = music_artist_items()
+            return 200, {"Items": self._updated(items), "TotalRecordCount": len(items)}
+        if parent == "artist-1":
+            items = [album_item()]
+            return 200, {"Items": self._updated(items), "TotalRecordCount": 1}
+        if parent == "album-test":
+            items = audio_items()
+            return 200, {"Items": self._updated(items), "TotalRecordCount": len(items)}
         return 200, {"Items": [], "TotalRecordCount": 0}
+
+    def _updated(self, items):
+        return [
+            {**item, **self.server.item_updates.get(item["Id"], {})}
+            for item in items
+        ]
 
     def _stream_media(self):
         path = self.server.media_path

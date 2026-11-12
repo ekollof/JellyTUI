@@ -5,8 +5,8 @@ are set. They only read data and fetch a small byte range; they never report
 playback or change library state.
 
 Example:
-    JELLYFIN_URL=http://europa.local:8096/jellyfin \
-    JELLYFIN_USERNAME=jellyfin JELLYFIN_PASSWORD=jellyfin \
+    JELLYFIN_URL=http://your-server:8096 \
+    JELLYFIN_USERNAME=your-user JELLYFIN_PASSWORD=your-password \
     uv run pytest tests/test_live.py -v
 """
 

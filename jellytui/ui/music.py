@@ -18,6 +18,7 @@ from ..models import TICKS_PER_SECOND, Item, format_clock
 from ..player import PlayerState
 from .artwork import prepare_artwork
 from .capabilities import detect_graphics, image_widget_class
+from .queue import QueueScreen
 
 if TYPE_CHECKING:
     from .main import MainScreen
@@ -36,6 +37,9 @@ class MusicPlayerScreen(ModalScreen[None]):
         Binding("p", "previous_track", "Prev"),
         Binding("minus", "volume_down", "Vol -", show=False),
         Binding("equals_sign", "volume_up", "Vol +", show=False),
+        Binding("e", "edit_metadata", "Edit", show=False),
+        Binding("Q", "queue", "Queue", show=False),
+        Binding("F", "shuffle_library", "Shuffle", show=False),
         Binding("s", "stop", "Stop", show=False),
     ]
 
@@ -71,6 +75,7 @@ class MusicPlayerScreen(ModalScreen[None]):
                         id="music-progress",
                     )
                     yield Static("", id="music-time")
+                    yield Static("", id="music-details")
                     yield Static("", id="music-controls")
             with Vertical(id="music-queue-box"):
                 yield Static("QUEUE", id="music-queue-title")
@@ -130,6 +135,7 @@ class MusicPlayerScreen(ModalScreen[None]):
             self.query_one("#music-subtitle", Static).update(Text(""))
             self.query_one("#music-state", Static).update(Text("STOPPED", style="dim"))
             self.query_one("#music-time", Static).update(Text(""))
+            self.query_one("#music-details", Static).update(Text(""))
             self.query_one("#music-progress", ProgressBar).update(total=1, progress=0)
             self.query_one("#music-kicker", Static).update(
                 Text("NOW PLAYING", style=f"bold {self._theme_color('primary')}")
@@ -172,16 +178,49 @@ class MusicPlayerScreen(ModalScreen[None]):
         self.query_one("#music-state", Static).update(
             Text(state_text, style=f"bold {self._state_color(state_text)}")
         )
-        time_text = f"{format_clock(position)} / {format_clock(duration)}"
-        if state:
-            time_text += f"   ·   volume {state.volume}%"
-        self.query_one("#music-time", Static).update(Text(time_text, style="dim"))
+        self.query_one("#music-time", Static).update(
+            Text(
+                f"Position  {format_clock(position)} / {format_clock(duration)}",
+                style="dim",
+            )
+        )
+        source = item.media_source
+        audio = source.audio_streams[0] if source and source.audio_streams else None
+        if audio is not None:
+            format_text = audio.codec.upper() or "Audio"
+            channel_text = audio.channel_layout or (f"{audio.channels}ch" if audio.channels else "")
+            if audio.channels or audio.channel_layout:
+                format_text += f"  ·  {channel_text}"
+            if (
+                source is not None
+                and source.container
+                and source.container.upper() != audio.codec.upper()
+            ):
+                format_text += f"  ·  {source.container.upper()}"
+        else:
+            format_text = "Audio"
+        track_number = item.index_number
+        if track_number is None:
+            track_number = index + 1
+        total_tracks = len(self.controller.music_queue) if self.controller.music_queue else 1
+        length = format_clock(duration)
+        volume = state.volume if state else 0
+        details = Text()
+        details.append("Length    ", style="dim")
+        details.append(f"{length}\n")
+        details.append("Track     ", style="dim")
+        details.append(f"{track_number} of {total_tracks}\n")
+        details.append("Format    ", style="dim")
+        details.append(f"{format_text}\n")
+        details.append("Volume    ", style="dim")
+        details.append(f"{volume}%")
+        self.query_one("#music-details", Static).update(details)
         self.query_one("#music-progress", ProgressBar).update(
             total=max(duration, 1.0), progress=min(position, max(duration, 1.0))
         )
         self.query_one("#music-controls", Static).update(
             Text(
-                "Space pause  ·  ←/→ seek  ·  n/p next/prev  ·  -/= volume  ·  s stop  ·  Esc close",
+                "Space pause  ·  ←/→ seek  ·  n/p next/prev  ·  -/= volume  ·  Q queue  ·  e edit  ·  s stop  ·  Esc close",
                 style="dim",
             )
         )
@@ -275,6 +314,15 @@ class MusicPlayerScreen(ModalScreen[None]):
     def action_volume_up(self) -> None:
         self.controller.action_volume_up()
 
+    def action_edit_metadata(self) -> None:
+        self.controller.edit_current_metadata()
+
+    def action_queue(self) -> None:
+        self.app.push_screen(QueueScreen(self.controller))
+
+    def action_shuffle_library(self) -> None:
+        self.controller.shuffle_library()
+
     def action_stop(self) -> None:
         self.controller.action_stop_playback()
 
@@ -289,9 +337,14 @@ class MusicPlayerScreen(ModalScreen[None]):
         self.query_one("#music-queue", OptionList).focus()
 
     def refresh_theme(self) -> None:
+        self.refresh_content()
+
+    def refresh_content(self) -> None:
         self._render_cache = None
         self._queue_signature = None
-        self._refresh_view(force=True)
+        self._last_item_id = None
+        if self.is_mounted:
+            self._refresh_view(force=True)
 
     # ---------------------------------------------------------------- artwork
 

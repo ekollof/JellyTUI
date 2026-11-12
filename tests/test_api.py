@@ -56,7 +56,7 @@ def test_login_rejects_bad_password(fake_server):
 def test_get_views_and_item_fields(fake_server):
     client = make_client(fake_server)
     views = client.get_views()
-    assert [view.name for view in views] == ["Movies", "Shows"]
+    assert [view.name for view in views] == ["Movies", "Shows", "Music"]
     assert views[0].collection_type == "movies"
 
     items = client.get_items(
@@ -238,3 +238,82 @@ def test_session_token_is_sent_after_login(fake_server):
 def test_fetch_image_without_artwork_returns_none(fake_server):
     client = make_client(fake_server)
     assert client.fetch_image("movie-1") is None
+
+
+def test_update_item_metadata_preserves_other_fields(fake_server):
+    client = make_client(fake_server)
+    updated = client.update_item_metadata(
+        "movie-1",
+        {
+            "Name": "The Matrix Reloaded",
+            "Genres": ["Action", "Science Fiction"],
+            "CommunityRating": 8.9,
+        },
+    )
+    request = last_request(fake_server, "POST", "/Items/movie-1")
+    body = request["body"]
+    assert body["Name"] == "The Matrix Reloaded"
+    assert body["Genres"] == ["Action", "Science Fiction"]
+    assert body["CommunityRating"] == 8.9
+    # Fields the editor did not touch must be carried through unchanged.
+    assert body["Overview"] == "A hacker learns the truth about his reality."
+    assert body["ForcedSortName"] == "the matrix"
+    assert body["OriginalTitle"] == "The Matrix"
+    assert body["Tags"] == ["cyberpunk"]
+    assert body["LockData"] is False
+    assert body["ProviderIds"]["Imdb"] == "tt0133093"
+    assert updated.name == "The Matrix Reloaded"
+
+
+def test_remote_search_and_apply(fake_server):
+    client = make_client(fake_server)
+    results = client.remote_search(
+        "album-test",
+        "MusicAlbum",
+        {"Name": "Test Album", "Year": 2026},
+    )
+    assert len(results) == 1
+    result = results[0]
+    assert result.name == "Test Album (MusicBrainz)"
+    assert result.provider_name == "MusicBrainz"
+    assert result.provider_ids["MusicBrainzReleaseGroup"] == "fake-id"
+    search = last_request(fake_server, "POST", "/Items/RemoteSearch/MusicAlbum")
+    assert search["body"]["ItemId"] == "album-test"
+    assert search["body"]["SearchInfo"] == {"Name": "Test Album", "Year": 2026}
+
+    client.apply_remote_search("album-test", result, replace_images=False)
+    apply = last_request(
+        fake_server, "POST", "/Items/RemoteSearch/Apply/album-test"
+    )
+    assert apply["query"]["replaceAllImages"] == ["false"]
+    assert apply["body"]["Name"] == "Test Album (MusicBrainz)"
+    assert apply["body"]["ProviderIds"]["MusicBrainzReleaseGroup"] == "fake-id"
+
+
+def test_music_queue_endpoints(fake_server):
+    client = make_client(fake_server)
+    tracks = client.get_music_tracks("lib-music")
+    assert [track.name for track in tracks] == ["Track One", "Track Two"]
+    assert all(track.type == "Audio" for track in tracks)
+
+    mix = client.instant_mix("artist-1")
+    assert len(mix) == 2
+    assert mix[0].type == "Audio"
+    assert last_request(fake_server, "GET", "/Items/artist-1/InstantMix")
+
+    genre_mix = client.genre_mix("Black Metal")
+    assert len(genre_mix) == 2
+    genre_request = next(
+        request
+        for request in fake_server.requests
+        if request["path"] == "/MusicGenres/Black%20Metal/InstantMix"
+    )
+    assert genre_request["query"]["limit"] == ["100"]
+
+    client.genre_mix("Folk/Rock")
+    assert any(
+        request["path"] == "/MusicGenres/Folk%2FRock/InstantMix"
+        for request in fake_server.requests
+    )
+
+    assert client.get_music_genres("lib-music") == ["Black Metal", "Rock"]

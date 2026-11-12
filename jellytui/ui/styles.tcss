@@ -449,3 +449,223 @@ MusicPlayerScreen {
     background: $primary 38%;
     color: $foreground;
 }
+
+#track-panel {
+    display: none;
+    height: 10;
+    border-top: solid $panel;
+    padding-top: 1;
+}
+
+#track-kicker {
+    height: 1;
+    color: $text-muted;
+    text-style: bold;
+}
+
+#track-title {
+    height: 1;
+    color: $foreground;
+    text-style: bold;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+}
+
+#track-subtitle {
+    height: 1;
+    color: $text-muted;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+}
+
+#track-progress {
+    margin: 1 0;
+}
+
+#track-time {
+    height: 1;
+    color: $text-muted;
+}
+
+#music-details {
+    height: auto;
+    margin-top: 1;
+    color: $text-muted;
+}
+
+/* ------------------------------------------------------------- metadata */
+
+#metadata-panel {
+    width: 80;
+    max-width: 96%;
+    height: 88%;
+    padding: 1 2;
+    background: $surface;
+    border: round $primary;
+}
+
+#metadata-scroll {
+    height: 1fr;
+}
+
+#metadata-scroll Input {
+    background: $background;
+    border: tall $panel;
+}
+
+#metadata-scroll Input:focus {
+    border: tall $primary;
+}
+
+#metadata-scroll TextArea {
+    height: 6;
+    margin-bottom: 1;
+}
+
+.metadata-row {
+    height: auto;
+}
+
+.metadata-row > Vertical {
+    width: 1fr;
+    height: auto;
+    padding-right: 1;
+}
+
+.metadata-section {
+    height: 1;
+    margin-top: 2;
+    color: $primary;
+    text-style: bold;
+}
+
+#metadata-status {
+    height: 2;
+    margin-top: 1;
+    color: $text-muted;
+}
+
+/* -------------------------------------------------------------- metadata lookup */
+
+#metadata-lookup {
+    height: auto;
+    margin-top: 1;
+}
+
+#metadata-lookup Button {
+    margin-right: 1;
+    min-width: 18;
+}
+
+#lookup-panel {
+    width: 82;
+    max-width: 96%;
+    height: 88%;
+    padding: 1 2;
+    background: $surface;
+    border: round $primary;
+}
+
+.lookup-hint {
+    height: auto;
+    color: $text-muted;
+    margin: 1 0;
+}
+
+.lookup-search-row {
+    height: auto;
+}
+
+.lookup-search-row > Vertical {
+    width: 1fr;
+    height: auto;
+    padding-right: 1;
+}
+
+.lookup-search-row > .lookup-year {
+    width: 12;
+}
+
+.lookup-actions {
+    height: auto;
+    align-horizontal: right;
+    margin-top: 1;
+}
+
+.lookup-actions Button {
+    margin-left: 1;
+}
+
+.lookup-actions Checkbox {
+    width: auto;
+    margin-left: 2;
+}
+
+#lookup-status {
+    height: 2;
+    margin-top: 1;
+    color: $text-muted;
+}
+
+#lookup-results {
+    height: 1fr;
+    background: $background;
+    border: solid $panel;
+    margin-top: 1;
+}
+
+#lookup-results > .option-list--option-highlighted {
+    background: $primary 38%;
+    color: $foreground;
+}
+
+#lookup-details {
+    height: auto;
+    max-height: 9;
+    margin-top: 1;
+    color: $foreground;
+}
+
+/* ------------------------------------------------------------- music queue */
+
+#queue-panel,
+#genre-panel {
+    width: 92;
+    max-width: 96%;
+    height: 86%;
+    padding: 1 2;
+    background: $surface;
+    border: round $primary;
+}
+
+#queue-summary {
+    height: auto;
+    color: $text-muted;
+    margin-bottom: 1;
+}
+
+#queue-list,
+#genre-list {
+    height: 1fr;
+    background: $background;
+    border: solid $panel;
+}
+
+#queue-list > .option-list--option-highlighted,
+#genre-list > .option-list--option-highlighted {
+    background: $primary 38%;
+    color: $foreground;
+}
+
+#queue-status,
+#genre-status {
+    height: 2;
+    margin-top: 1;
+    color: $foreground;
+}
+
+#queue-hint,
+#genre-hint {
+    height: auto;
+    color: $text-muted;
+}

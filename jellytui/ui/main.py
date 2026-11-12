@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import random
 import re
 import time
 import uuid
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 
 from rich.text import Text
@@ -50,7 +51,7 @@ SEARCH_TYPES = "Movie,Series,Episode,BoxSet,MusicAlbum,MusicArtist,Audio,MusicVi
 VIEW_TYPES: dict[str, str] = {
     "movies": "Movie,BoxSet",
     "tvshows": "Series",
-    "music": "MusicAlbum,MusicArtist",
+    "music": "MusicArtist",
     "musicvideos": "MusicVideo",
     "boxsets": "BoxSet",
     "folders": BROWSE_TYPES,
@@ -123,6 +124,12 @@ class MainScreen(Screen):
         Binding("a", "audio_tracks", "Audio"),
         Binding("v", "subtitle_tracks", "Subs"),
         Binding("m", "music_player", "Music"),
+        Binding("Q", "queue", "Queue"),
+        Binding("A", "add_to_queue", "Add"),
+        Binding("F", "shuffle_library", "Shuffle", show=False),
+        Binding("M", "instant_mix", "Mix", show=False),
+        Binding("ctrl+a", "add_all_to_queue", "Add all", show=False),
+        Binding("e", "edit_metadata", "Edit", show=False),
         Binding("question_mark", "help", "Help"),
         Binding("comma", "seek_back", "-10s", show=False),
         Binding("full_stop", "seek_forward", "+10s", show=False),
@@ -192,6 +199,17 @@ class MainScreen(Screen):
                     yield Static("", id="details-title")
                     yield Static("", id="details-meta")
                     yield Static("", id="details-body")
+                with Vertical(id="track-panel"):
+                    yield Static("", id="track-kicker")
+                    yield Static("", id="track-title")
+                    yield Static("", id="track-subtitle")
+                    yield ProgressBar(
+                        total=1,
+                        show_percentage=False,
+                        show_eta=False,
+                        id="track-progress",
+                    )
+                    yield Static("", id="track-time")
         with Horizontal(id="nowplaying"):
             yield Static("Nothing playing", id="now-title")
             yield ProgressBar(
@@ -463,10 +481,17 @@ class MainScreen(Screen):
         self.items = items
         self._items_by_id = {item.id: item for item in items}
         table = self.query_one("#items", DataTable)
-        table.clear(columns=False)
+        table.clear(columns=True)
+        table.add_column(
+            self.title_column,
+            key="title",
+        )
+        table.add_column("Year", key="year", width=6)
+        table.add_column("Length", key="length", width=9)
+        table.add_column("Status", key="status", width=14)
         for item in items:
             table.add_row(
-                Text(item.title),
+                Text(_row_title(item)),
                 Text(str(item.production_year or "")),
                 Text(format_ticks(item.runtime_ticks) if item.is_playable else ""),
                 Text(item.status_text),
@@ -487,7 +512,8 @@ class MainScreen(Screen):
             self._restore_selection_id = None
         table.move_cursor(row=index)
         self._show_details(items[index])
-        table.focus()
+        if self.app.screen is self:
+            table.focus()
 
     def _update_breadcrumb(self) -> None:
         if not self.is_mounted:
@@ -510,6 +536,17 @@ class MainScreen(Screen):
             return bool(self.query_one("#items", DataTable).loading)
         except Exception:
             return False
+
+    @property
+    def title_column(self) -> str:
+        include = self.location.include_types if self.location else None
+        if include == "MusicArtist":
+            return "Artist"
+        if include == "MusicAlbum":
+            return "Album"
+        if include == "Audio":
+            return "Track"
+        return "Title"
 
     @property
     def root_locations(self) -> dict[str, Location]:
@@ -769,6 +806,401 @@ class MainScreen(Screen):
             self._player_command(
                 self._engine().seek, 0.0, absolute=True, error_title="Seek failed"
             )
+
+    def action_edit_metadata(self) -> None:
+        item = self._selected()
+        if item:
+            self.edit_metadata(item)
+
+    def edit_current_metadata(self) -> None:
+        item, _ = self.current_music_item()
+        if item is not None:
+            self.edit_metadata(item)
+
+    def edit_metadata(self, item: Item) -> None:
+        if self.app.client is None:
+            return
+        from .metadata import MetadataScreen
+
+        item_id = item.id
+        self.app.push_screen(
+            MetadataScreen(item),
+            callback=lambda result: self._metadata_saved(item_id, result),
+        )
+
+    def _metadata_saved(self, item_id: str, result: Item | bool | None) -> None:
+        if result is None:
+            return
+        if result is True:
+            self._restore_selection_id = item_id
+            if self.location:
+                self._start_load(self.location)
+            for screen in self.app.screen_stack:
+                refresh = getattr(screen, "refresh_content", None)
+                if callable(refresh):
+                    refresh()
+            self.notify("Metadata lookup applied", timeout=3, markup=False)
+            return
+        updated = result
+        if self.playback and self.playback.item.id == updated.id:
+            _copy_item_fields(self.playback.item, updated)
+        for entry in self.music_queue:
+            if entry.id == updated.id:
+                _copy_item_fields(entry, updated)
+        self._restore_selection_id = updated.id
+        if self.location:
+            self._start_load(self.location)
+        for screen in self.app.screen_stack:
+            refresh = getattr(screen, "refresh_content", None)
+            if callable(refresh):
+                refresh()
+        self.notify(f"Metadata saved: {updated.name}", timeout=3, markup=False)
+
+    # ------------------------------------------------------------------ queue
+
+    def music_library_id(self) -> str | None:
+        for view in self._views:
+            if view.collection_type == "music":
+                return view.id
+        return None
+
+    def action_queue(self) -> None:
+        if self.app.client is None:
+            return
+        from .queue import QueueScreen
+
+        self.app.push_screen(QueueScreen(self))
+
+    def action_add_to_queue(self) -> None:
+        item = self._selected()
+        if item is None:
+            return
+        if not _is_queuable(item):
+            self.notify(
+                "Select a track, album or artist to add to the queue.",
+                timeout=4,
+            )
+            return
+        self._add_item_to_queue(item)
+
+    @work(thread=True, exclusive=False, group="queue-add")
+    def _add_item_to_queue(self, item: Item) -> None:
+        worker = get_current_worker()
+        try:
+            tracks = _expand_music_item(self.app.client, item)
+        except JellyfinError as exc:
+            if not worker.is_cancelled:
+                self.app.call_from_thread(
+                    self._queue_error, "Could not add to the queue", str(exc)
+                )
+            return
+        except Exception as exc:  # pragma: no cover - defensive
+            if not worker.is_cancelled:
+                self.app.call_from_thread(
+                    self._queue_error,
+                    "Could not add to the queue",
+                    f"Unexpected error: {exc}",
+                )
+            return
+        if not worker.is_cancelled:
+            self.app.call_from_thread(
+                self._append_queue_items, tracks, item.name
+            )
+
+    def action_add_all_to_queue(self) -> None:
+        if self.location is None:
+            return
+        self._add_all_to_queue(self.location, list(self.items))
+
+    @work(thread=True, exclusive=False, group="queue-add")
+    def _add_all_to_queue(self, location: Location, items: list[Item]) -> None:
+        worker = get_current_worker()
+        client: JellyfinClient = self.app.client
+        include = location.include_types or ""
+        parent_id = location.parent_id
+        music_parent = parent_id is not None and include in {
+            "MusicArtist",
+            "MusicAlbum",
+            "Audio",
+            "AudioBook",
+        }
+        try:
+            if location.kind == "search" or not music_parent:
+                tracks: list[Item] = []
+                seen: set[str] = set()
+                for item in items:
+                    for track in _expand_music_item(client, item):
+                        if track.id not in seen:
+                            seen.add(track.id)
+                            tracks.append(track)
+            else:
+                sort_by = (
+                    "ParentIndexNumber,IndexNumber"
+                    if include in {"Audio", "AudioBook"}
+                    else "Album,ParentIndexNumber,IndexNumber"
+                )
+                tracks = client.get_music_tracks(
+                    parent_id, recursive=True, sort_by=sort_by
+                )
+        except JellyfinError as exc:
+            if not worker.is_cancelled:
+                self.app.call_from_thread(
+                    self._queue_error, "Could not add to the queue", str(exc)
+                )
+            return
+        except Exception as exc:  # pragma: no cover - defensive
+            if not worker.is_cancelled:
+                self.app.call_from_thread(
+                    self._queue_error,
+                    "Could not add to the queue",
+                    f"Unexpected error: {exc}",
+                )
+            return
+        if not worker.is_cancelled:
+            self.app.call_from_thread(
+                self._append_queue_items, tracks, location.title
+            )
+
+    def _append_queue_items(self, items: list[Item], label: str) -> None:
+        known = {entry.id for entry in self.music_queue}
+        added: list[Item] = []
+        for item in items:
+            if item.type not in AUDIO_TYPES or item.id in known:
+                continue
+            known.add(item.id)
+            added.append(item)
+        if not added:
+            self.notify(
+                f"No new tracks to add from {label}.",
+                timeout=4,
+                markup=False,
+            )
+            return
+        was_empty = not self.music_queue
+        self.music_queue.extend(added)
+        if was_empty:
+            self.music_index = 0
+        count = len(added)
+        self.notify(
+            f"Added {count} track{'s' if count != 1 else ''} from {label} "
+            "to the queue. Press Q to manage it.",
+            timeout=5,
+            markup=False,
+        )
+
+    def action_shuffle_library(self) -> None:
+        self.shuffle_library()
+
+    def shuffle_library(self) -> None:
+        library = self.music_library_id()
+        if library is None:
+            self.notify(
+                "No music library is available to shuffle.",
+                severity="warning",
+                timeout=4,
+            )
+            return
+        self.notify("Building a music-library shuffle…", timeout=3)
+        self._shuffle_library_worker(library)
+
+    @work(thread=True, exclusive=True, group="queue-generate")
+    def _shuffle_library_worker(self, library_id: str) -> None:
+        worker = get_current_worker()
+        try:
+            tracks = self.app.client.get_music_tracks(
+                library_id, recursive=True, sort_by="Random", limit=2000
+            )
+        except JellyfinError as exc:
+            if not worker.is_cancelled:
+                self.app.call_from_thread(
+                    self._queue_error, "Could not shuffle the library", str(exc)
+                )
+            return
+        except Exception as exc:  # pragma: no cover - defensive
+            if not worker.is_cancelled:
+                self.app.call_from_thread(
+                    self._queue_error,
+                    "Could not shuffle the library",
+                    f"Unexpected error: {exc}",
+                )
+            return
+        if not worker.is_cancelled:
+            self.app.call_from_thread(
+                self._replace_queue, tracks, "library shuffle"
+            )
+
+    def action_instant_mix(self) -> None:
+        item = self._selected()
+        if item is None or item.type not in {
+            "Audio",
+            "AudioBook",
+            "MusicAlbum",
+            "MusicArtist",
+        }:
+            self.notify(
+                "Select a track, album or artist to start a mix.",
+                timeout=4,
+            )
+            return
+        self.notify(f"Building a mix from {item.name}…", timeout=3)
+        self._instant_mix_worker(item)
+
+    @work(thread=True, exclusive=True, group="queue-generate")
+    def _instant_mix_worker(self, item: Item) -> None:
+        worker = get_current_worker()
+        try:
+            tracks = self.app.client.instant_mix(item.id)
+        except JellyfinError as exc:
+            if not worker.is_cancelled:
+                self.app.call_from_thread(
+                    self._queue_error, "Could not build the mix", str(exc)
+                )
+            return
+        except Exception as exc:  # pragma: no cover - defensive
+            if not worker.is_cancelled:
+                self.app.call_from_thread(
+                    self._queue_error,
+                    "Could not build the mix",
+                    f"Unexpected error: {exc}",
+                )
+            return
+        if not worker.is_cancelled:
+            self.app.call_from_thread(
+                self._replace_queue, tracks, f"{item.name} mix"
+            )
+
+    def play_genre_mix(self, genre: str) -> None:
+        self.notify(f"Building a {genre} mix…", timeout=3)
+        self._genre_mix_worker(genre)
+
+    @work(thread=True, exclusive=True, group="queue-generate")
+    def _genre_mix_worker(self, genre: str) -> None:
+        worker = get_current_worker()
+        try:
+            tracks = self.app.client.genre_mix(genre)
+        except JellyfinError as exc:
+            if not worker.is_cancelled:
+                self.app.call_from_thread(
+                    self._queue_error, f"Could not build a {genre} mix", str(exc)
+                )
+            return
+        except Exception as exc:  # pragma: no cover - defensive
+            if not worker.is_cancelled:
+                self.app.call_from_thread(
+                    self._queue_error,
+                    f"Could not build a {genre} mix",
+                    f"Unexpected error: {exc}",
+                )
+            return
+        if not worker.is_cancelled:
+            self.app.call_from_thread(
+                self._replace_queue, tracks, f"{genre} mix"
+            )
+
+    def _replace_queue(self, items: list[Item], label: str) -> None:
+        tracks = [item for item in items if item.type in AUDIO_TYPES]
+        if not tracks:
+            self.notify(
+                f"No playable music was found for the {label}.",
+                severity="warning",
+                timeout=5,
+                markup=False,
+            )
+            return
+        self.music_queue = tracks
+        self.music_index = 0
+        self.play_music_index(0)
+        self.notify(
+            f"Queued {len(tracks)} tracks from the {label}.",
+            timeout=4,
+            markup=False,
+        )
+
+    def _queue_error(self, title: str, message: str) -> None:
+        self.notify(
+            message,
+            title=title,
+            severity="error",
+            timeout=8,
+            markup=False,
+        )
+
+    def remove_queue_index(self, index: int) -> None:
+        if not 0 <= index < len(self.music_queue):
+            return
+        was_current = index == self.music_index
+        was_playing = (
+            self.playback is not None
+            and self.playback.item.type in AUDIO_TYPES
+        )
+        self.music_queue.pop(index)
+        if index < self.music_index:
+            self.music_index -= 1
+        elif was_current:
+            if index < len(self.music_queue):
+                # Playing the replacement lets the normal start-playback path
+                # stop the removed track without racing a separate stop call.
+                self.music_index = index
+                if was_playing:
+                    self.play_music_index(index)
+            elif self.music_queue:
+                self.music_index = len(self.music_queue) - 1
+                if was_playing:
+                    self.action_stop_playback()
+            else:
+                self.music_index = -1
+                if was_playing:
+                    self.action_stop_playback()
+
+    def move_queue_item(self, index: int, delta: int) -> None:
+        target = index + delta
+        if not 0 <= index < len(self.music_queue):
+            return
+        if not 0 <= target < len(self.music_queue):
+            return
+        current_id = self._queue_current_id()
+        self.music_queue[index], self.music_queue[target] = (
+            self.music_queue[target],
+            self.music_queue[index],
+        )
+        self._restore_queue_index(current_id)
+
+    def shuffle_queue(self) -> None:
+        if len(self.music_queue) < 2:
+            self.notify(
+                "The queue needs at least two tracks to shuffle.",
+                timeout=3,
+            )
+            return
+        current_id = self._queue_current_id()
+        random.shuffle(self.music_queue)
+        self._restore_queue_index(current_id)
+        self.notify("Shuffled the queue.", timeout=3)
+
+    def clear_queue(self) -> None:
+        if not self.music_queue:
+            return
+        if (
+            self.playback is not None
+            and self.playback.item.type in AUDIO_TYPES
+        ):
+            self.action_stop_playback()
+        self.music_queue.clear()
+        self.music_index = -1
+        self.notify("Cleared the music queue.", timeout=3)
+
+    def _queue_current_id(self) -> str | None:
+        if 0 <= self.music_index < len(self.music_queue):
+            return self.music_queue[self.music_index].id
+        return None
+
+    def _restore_queue_index(self, item_id: str | None) -> None:
+        if item_id is None:
+            return
+        for position, entry in enumerate(self.music_queue):
+            if entry.id == item_id:
+                self.music_index = position
+                return
 
     def action_music_player(self) -> None:
         item, _ = self.current_music_item()
@@ -1107,9 +1539,11 @@ class MainScreen(Screen):
             return
         context = self.playback
         if context is None:
+            self._hide_track_panel()
             return
         state = self._engine_state(context)
         self._last_state = state
+        self._update_track_panel(context, state)
         if not state.running:
             message = (
                 "The audio backend stopped unexpectedly."
@@ -1184,6 +1618,51 @@ class MainScreen(Screen):
                 volume=volume,
             )
         except JellyfinError:
+            pass
+
+    def _update_track_panel(
+        self, context: PlaybackContext, state: PlayerState
+    ) -> None:
+        panel = self.query_one("#track-panel")
+        if context.item.type not in AUDIO_TYPES:
+            panel.display = False
+            return
+        panel.display = True
+        duration = max(0.0, state.duration or 0.0)
+        position = max(0.0, state.position or 0.0)
+        if not state.loaded:
+            status = "buffering"
+        elif state.paused:
+            status = "paused"
+        else:
+            status = "playing"
+        backend = "ffmpeg" if context.engine == "audio" else "mpv"
+        kicker = f"NOW PLAYING · {backend.upper()} · {status.upper()}"
+        self.query_one("#track-kicker", Static).update(
+            Text(kicker, style=f"bold {self._theme_color('primary')}")
+        )
+        self.query_one("#track-title", Static).update(
+            Text(context.item.name, style=f"bold {self._theme_color('foreground')}")
+        )
+        self.query_one("#track-subtitle", Static).update(
+            Text(context.item.detail_subtitle or "Audio", style="dim")
+        )
+        self.query_one("#track-time", Static).update(
+            Text(
+                f"{format_clock(position)} / {format_clock(duration)}"
+                f"   ·   volume {state.volume}%",
+                style="dim",
+            )
+        )
+        self.query_one("#track-progress", ProgressBar).update(
+            total=max(duration, 1.0),
+            progress=min(position, max(duration, 1.0)),
+        )
+
+    def _hide_track_panel(self) -> None:
+        try:
+            self.query_one("#track-panel").display = False
+        except Exception:
             pass
 
     def _update_now_playing(self, context: PlaybackContext, state: PlayerState) -> None:
@@ -1650,6 +2129,37 @@ class MainScreen(Screen):
 # --------------------------------------------------------------------- helpers
 
 
+def _is_queuable(item: Item) -> bool:
+    return item.type in AUDIO_TYPES or item.type in {
+        "MusicAlbum",
+        "MusicArtist",
+    }
+
+
+def _expand_music_item(client: JellyfinClient, item: Item) -> list[Item]:
+    if item.type in AUDIO_TYPES:
+        return [item]
+    if item.type == "MusicAlbum":
+        return client.get_music_tracks(
+            item.id,
+            recursive=False,
+            sort_by="ParentIndexNumber,IndexNumber",
+        )
+    if item.type == "MusicArtist":
+        return client.get_music_tracks(
+            item.id,
+            recursive=True,
+            sort_by="Album,ParentIndexNumber,IndexNumber",
+        )
+    return []
+
+
+def _row_title(item: Item) -> str:
+    if item.type in AUDIO_TYPES and item.index_number is not None:
+        return f"{item.index_number:02d}  {item.name}"
+    return item.title
+
+
 def _location_for_view(view: Item) -> Location:
     collection = view.collection_type
     include = VIEW_TYPES.get(collection, BROWSE_TYPES)
@@ -1661,6 +2171,7 @@ def _location_for_view(view: Item) -> Location:
         parent_id=view.id,
         include_types=include,
         sort_by=sort_by,
+        recursive=collection != "music",
     )
 
 
@@ -1687,6 +2198,14 @@ def _language_matches(code: str, wanted: str) -> bool:
         return True
     full = language_name(code).lower()
     return bool(full) and (full == wanted_lower or full.startswith(wanted_lower))
+
+
+def _copy_item_fields(target: Item, source: Item) -> None:
+    for item_field in fields(Item):
+        try:
+            setattr(target, item_field.name, getattr(source, item_field.name))
+        except (AttributeError, TypeError):
+            pass
 
 
 def _report_stopped_quietly(

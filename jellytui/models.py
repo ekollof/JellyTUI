@@ -196,6 +196,56 @@ def format_rating(value: float | None) -> str:
 
 
 @dataclass(slots=True)
+class RemoteSearchResult:
+    name: str
+    year: int | None = None
+    provider_name: str = ""
+    provider_ids: dict[str, str] = field(default_factory=dict)
+    overview: str = ""
+    album_artist: str = ""
+    artists: list[str] = field(default_factory=list)
+    image_url: str = ""
+    raw: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> RemoteSearchResult:
+        album_artist = data.get("AlbumArtist")
+        if isinstance(album_artist, dict):
+            album_artist = album_artist.get("Name") or ""
+        artists = []
+        for artist in data.get("Artists") or []:
+            if isinstance(artist, dict):
+                name = artist.get("Name")
+                if name:
+                    artists.append(str(name))
+            elif artist:
+                artists.append(str(artist))
+        return cls(
+            name=str(data.get("Name") or "Unknown"),
+            year=_optional_int(data.get("ProductionYear")),
+            provider_name=str(data.get("SearchProviderName") or ""),
+            provider_ids={
+                str(key): str(value)
+                for key, value in (data.get("ProviderIds") or {}).items()
+            },
+            overview=str(data.get("Overview") or ""),
+            album_artist=str(album_artist or ""),
+            artists=artists,
+            image_url=str(data.get("ImageUrl") or ""),
+            raw=dict(data),
+        )
+
+    @property
+    def label(self) -> str:
+        parts = [self.name]
+        if self.year:
+            parts.append(f"({self.year})")
+        if self.provider_name:
+            parts.append(f"· {self.provider_name}")
+        return "  ".join(parts)
+
+
+@dataclass(slots=True)
 class MediaStream:
     index: int
     type: str
@@ -362,6 +412,11 @@ class Item:
     album_id: str = ""
     album_image_tag: str = ""
     artists: list[str] = field(default_factory=list)
+    album_artists: list[str] = field(default_factory=list)
+    tags: list[str] = field(default_factory=list)
+    original_title: str = ""
+    sort_name: str = ""
+    forced_sort_name: str = ""
     premiere_date: str = ""
     collection_type: str = ""
     image_tag: str = ""
@@ -397,6 +452,15 @@ class Item:
             album_id=str(data.get("AlbumId") or ""),
             album_image_tag=str(data.get("AlbumPrimaryImageTag") or ""),
             artists=[str(a) for a in data.get("Artists") or []],
+            album_artists=[
+                str(artist.get("Name") or "")
+                for artist in data.get("AlbumArtists") or []
+                if isinstance(artist, dict)
+            ],
+            tags=[str(tag) for tag in data.get("Tags") or []],
+            original_title=str(data.get("OriginalTitle") or ""),
+            sort_name=str(data.get("SortName") or ""),
+            forced_sort_name=str(data.get("ForcedSortName") or ""),
             premiere_date=str(data.get("PremiereDate") or ""),
             collection_type=str(data.get("CollectionType") or ""),
             image_tag=str((data.get("ImageTags") or {}).get("Primary") or ""),
@@ -457,6 +521,10 @@ class Item:
                 parts.append(artist)
             elif self.album:
                 parts.append(self.album)
+        elif self.type == "MusicAlbum":
+            artist = ", ".join(self.album_artists or self.artists)
+            if artist:
+                parts.append(artist)
         elif self.series_name:
             parts.append(self.series_name)
         if self.production_year:
