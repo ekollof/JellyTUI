@@ -68,6 +68,8 @@ async def test_browse_search_and_modals(fake_server, tmp_path):
         assert screen.location is not None and screen.location.kind == "resume"
         assert "2 items" in str(screen.query_one("#breadcrumb", Static).render())
         assert "The Matrix" in str(screen.query_one("#details-title", Static).render())
+        poster_art = screen.query_one("#poster-art", Static)
+        assert poster_art.styles.height.value == screen._poster_height()
 
         libraries = screen.query_one("#libraries", OptionList)
         assert libraries.option_count == 6  # resume, latest, separator, 3 views

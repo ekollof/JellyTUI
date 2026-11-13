@@ -253,8 +253,10 @@ class MainScreen(Screen):
         poster_height = self._poster_height()
         poster = self.query_one("#poster")
         poster_box = self.query_one("#poster-box")
+        poster_art = self.query_one("#poster-art")
         poster.styles.height = poster_height
         poster_box.styles.height = poster_height
+        poster_art.styles.height = poster_height
         size = (38, poster_height)
         if (
             self._details_visible
