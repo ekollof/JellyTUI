@@ -254,7 +254,11 @@ class MainScreen(Screen):
         poster = self.query_one("#poster")
         poster_box = self.query_one("#poster-box")
         poster_art = self.query_one("#poster-art")
-        poster.styles.height = poster_height
+        # Let textual-image derive both dimensions from the source image and
+        # the box it has to fit into; forcing only the height stretches wide
+        # episode stills and wide artwork.
+        poster.styles.width = "auto"
+        poster.styles.height = "auto"
         poster_box.styles.height = poster_height
         poster_art.styles.height = poster_height
         size = (38, poster_height)

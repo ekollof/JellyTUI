@@ -213,7 +213,7 @@ DataTable > .datatable--odd-row {
 }
 
 #poster {
-    height: 12;
+    height: auto;
     width: auto;
 }
 
