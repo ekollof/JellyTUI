@@ -470,6 +470,20 @@ class FakeJellyfinHandler(BaseHTTPRequestHandler):
         return 404, {"Message": f"Unhandled route {method} {path}"}
 
     def _items(self, query):
+        ids = (query.get("ids") or [""])[0]
+        if ids:
+            wanted = set(ids.split(","))
+            catalog = [
+                *RESUME,
+                *series_items()["series"],
+                *series_items()["season"],
+                *series_items()["episode"],
+                *audio_items(),
+                album_item(),
+                *music_artist_items(),
+            ]
+            items = [dict(item) for item in catalog if item["Id"] in wanted]
+            return 200, {"Items": self._updated(items), "TotalRecordCount": len(items)}
         parent = (query.get("parentId") or [""])[0]
         search = (query.get("searchTerm") or [""])[0].lower()
         if search:

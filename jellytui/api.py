@@ -254,7 +254,9 @@ class JellyfinClient:
                 "enableUserData": "true",
             },
         )
-        return [Item.from_json(item) for item in data.get("Items") or []]
+        items = [Item.from_json(item) for item in data.get("Items") or []]
+        self._correct_series_counts(items)
+        return items
 
     def get_latest(
         self,
@@ -282,7 +284,45 @@ class JellyfinClient:
             return []
         # The Latest endpoint returns a bare list on older servers.
         items = data.get("Items") if isinstance(data, dict) else data
-        return [Item.from_json(item) for item in items or [] if isinstance(item, dict)]
+        result = [
+            Item.from_json(item) for item in items or [] if isinstance(item, dict)
+        ]
+        self._correct_series_counts(result)
+        return result
+
+    def _correct_series_counts(self, items: list[Item]) -> None:
+        """Fix series season counts reported by the Latest endpoint.
+
+        `/Items/Latest` sets a series' ChildCount to the number of direct
+        filesystem children (which can be far larger than its season count).
+        The regular items endpoint reports the real value, so query it for the
+        series in the list and replace the misleading count.
+        """
+        series = [item for item in items if item.type == "Series"]
+        if not series:
+            return
+        try:
+            data = self._get_json(
+                "/Items",
+                {
+                    "ids": ",".join(item.id for item in series),
+                    "userId": self.user_id,
+                    "fields": "ChildCount",
+                    "enableUserData": "true",
+                },
+            )
+        except JellyfinError:
+            for item in series:
+                item.child_count = None
+            return
+        counts = {
+            str(entry.get("Id")): entry.get("ChildCount")
+            for entry in data.get("Items") or []
+            if isinstance(entry, dict)
+        }
+        for item in series:
+            count = counts.get(item.id)
+            item.child_count = int(count) if count is not None else None
 
     def get_item(self, item_id: str, *, media: bool = True) -> Item:
         params: dict[str, Any] = {"userId": self.user_id}

@@ -5,6 +5,7 @@ from __future__ import annotations
 from urllib.parse import parse_qs, urlparse
 
 import pytest
+from conftest import series_items
 
 from jellytui.api import AuthenticationError, JellyfinClient, JellyfinError
 from jellytui.models import Item
@@ -317,3 +318,24 @@ def test_music_queue_endpoints(fake_server):
     )
 
     assert client.get_music_genres("lib-music") == ["Black Metal", "Rock"]
+
+
+def test_latest_corrects_series_season_count(fake_server):
+    latest_series = {
+        **series_items()["series"][0],
+        "ChildCount": 22,
+    }
+    fake_server.overrides[("GET", "/Items/Latest")] = (200, [latest_series])
+    client = make_client(fake_server)
+    latest = client.get_latest()
+    assert len(latest) == 1
+    assert latest[0].type == "Series"
+    assert latest[0].child_count == 2
+    assert latest[0].status_text == "2 seasons"
+    correction = next(
+        request
+        for request in fake_server.requests
+        if request["path"] == "/Items"
+        and request["query"].get("ids") == ["series-1"]
+    )
+    assert correction["query"]["fields"] == ["ChildCount"]
